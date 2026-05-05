@@ -599,6 +599,50 @@ async fn process_sidecar(
             }
         },
         SidecarDecision::RollBack => {
+            // Distinguish "stale sidecar from a previous successful
+            // roll-forward whose audit/delete failed" from a legitimate
+            // rollback. If every table is at NoMovement AND any pin's
+            // manifest_pinned has advanced past expected_version, the
+            // manifest already reflects the writer's intent — a previous
+            // recovery's `roll_forward_all` succeeded but `record_audit`
+            // or `delete_sidecar` failed, leaving the sidecar to be
+            // re-discovered. Recording this as RolledBack with empty
+            // outcomes (the naive RollBack path's behavior under all-
+            // NoMovement) misleads operators reading
+            // `_graph_commit_recoveries.lance` — the actual outcome was
+            // a successful roll-forward.
+            let all_no_movement = states
+                .iter()
+                .all(|s| matches!(s.classification, TableClassification::NoMovement));
+            let any_pin_advanced = sidecar
+                .tables
+                .iter()
+                .zip(states.iter())
+                .any(|(pin, state)| state.manifest_pinned > pin.expected_version);
+            if all_no_movement && any_pin_advanced {
+                if matches!(mode, RecoveryMode::RollForwardOnly) {
+                    // Refresh-time audit-recovery is safe: no
+                    // Dataset::restore involved; just an audit-row write
+                    // and sidecar delete.
+                    warn!(
+                        operation_id = sidecar.operation_id.as_str(),
+                        writer_kind = ?sidecar.writer_kind,
+                        "recovery: cleaning up stale sidecar from a prior successful \
+                         roll-forward (audit-recovery, in-process refresh)"
+                    );
+                } else {
+                    warn!(
+                        operation_id = sidecar.operation_id.as_str(),
+                        writer_kind = ?sidecar.writer_kind,
+                        "recovery: cleaning up stale sidecar from a prior successful \
+                         roll-forward (manifest already advanced; recording RolledForward audit)"
+                    );
+                }
+                return record_audit_recovery_rollforward(
+                    root_uri, storage, snapshot, sidecar, &states,
+                )
+                .await;
+            }
             if matches!(mode, RecoveryMode::RollForwardOnly) {
                 // In-process recovery cannot run Dataset::restore safely
                 // (would orphan a concurrent writer's commit). Leave the
@@ -737,6 +781,49 @@ async fn roll_back_sidecar(
         sidecar,
         snapshot.version(),
         RecoveryKind::RolledBack,
+        outcomes,
+    )
+    .await?;
+    delete_sidecar_by_operation_id(root_uri, storage, &sidecar.operation_id).await?;
+    Ok(())
+}
+
+/// Cleanup path for stale sidecars where a previous recovery's
+/// roll-forward succeeded (manifest pin advanced past `expected_version`)
+/// but `record_audit` or sidecar deletion failed, leaving the sidecar
+/// to be re-discovered on a subsequent open. By the time we re-classify,
+/// every table reads as `NoMovement` (lance_head == manifest_pinned),
+/// which the naive `RollBack` arm would record as RolledBack-with-empty-
+/// outcomes — misleading for operators because the actual outcome was
+/// a successful roll-forward.
+///
+/// This helper records the correct shape: a `RolledForward` audit row
+/// whose `from_version` is the original `expected_version` and whose
+/// `to_version` is the current `manifest_pinned` (the actual published
+/// version after the prior roll-forward). No Lance writes are needed —
+/// the substrate is already in the post-roll-forward state.
+async fn record_audit_recovery_rollforward(
+    root_uri: &str,
+    storage: &dyn StorageAdapter,
+    snapshot: &Snapshot,
+    sidecar: &RecoverySidecar,
+    states: &[ClassifiedTable],
+) -> Result<()> {
+    let outcomes: Vec<TableOutcome> = sidecar
+        .tables
+        .iter()
+        .zip(states.iter())
+        .map(|(pin, state)| TableOutcome {
+            table_key: pin.table_key.clone(),
+            from_version: pin.expected_version,
+            to_version: state.manifest_pinned,
+        })
+        .collect();
+    record_audit(
+        root_uri,
+        sidecar,
+        snapshot.version(),
+        RecoveryKind::RolledForward,
         outcomes,
     )
     .await?;
