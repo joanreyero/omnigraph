@@ -1377,6 +1377,108 @@ async fn branch_merge_phase_b_failure_recovered_on_non_main_target() {
     .unwrap();
 }
 
+/// Contract: the BranchMerge sidecar's per-table `table_branch` MUST be
+/// the merge target branch (where commits land via
+/// `publish_rewritten_merge_table` → `open_for_mutation` → potentially
+/// `fork_dataset_from_entry_state`), NOT `entry.table_branch` (where
+/// the table currently lives in the target's manifest snapshot).
+///
+/// `ensure_indices_for_branch` already has this invariant pinned by an
+/// explicit comment at `table_ops.rs:115-120`. Without the same fix in
+/// `merge.rs`, a future change to candidate selection or the publish
+/// path that produces a `RewriteMerged` whose entry.table_branch
+/// diverges from active_branch would silently drift Lance HEAD on the
+/// target ref while recovery checks the wrong ref and no-ops the
+/// rollback.
+///
+/// This test reads the sidecar JSON directly and asserts every per-pin
+/// `table_branch` equals the active (target) branch. Even when the
+/// values happen to coincide in practice (the strict candidate logic
+/// keeps RewriteMerged tables on active_branch), the contract assertion
+/// catches a regression that reverts to `entry.table_branch.clone()`.
+#[tokio::test]
+async fn branch_merge_sidecar_pins_table_branch_to_active_branch() {
+    use omnigraph::loader::{LoadMode, load_jsonl};
+
+    let _scenario = FailScenario::setup();
+    let dir = tempfile::tempdir().unwrap();
+    let uri = dir.path().to_str().unwrap().to_string();
+
+    {
+        let mut db = Omnigraph::init(&uri, helpers::TEST_SCHEMA).await.unwrap();
+        load_jsonl(
+            &mut db,
+            r#"{"type":"Person","data":{"name":"alice","age":30}}
+"#,
+            LoadMode::Append,
+        )
+        .await
+        .unwrap();
+        db.branch_create("target_branch").await.unwrap();
+        db.mutate(
+            "target_branch",
+            MUTATION_QUERIES,
+            "insert_person",
+            &mixed_params(&[("$name", "Bob")], &[("$age", 40)]),
+        )
+        .await
+        .unwrap();
+        db.branch_create("source_branch").await.unwrap();
+        db.mutate(
+            "source_branch",
+            MUTATION_QUERIES,
+            "insert_person",
+            &mixed_params(&[("$name", "Carol")], &[("$age", 50)]),
+        )
+        .await
+        .unwrap();
+    }
+
+    {
+        let mut db = Omnigraph::open(&uri).await.unwrap();
+        let _failpoint =
+            ScopedFailPoint::new("branch_merge.post_phase_b_pre_manifest_commit", "return");
+        let _ = db
+            .branch_merge("source_branch", "target_branch")
+            .await
+            .expect_err("failpoint must fire");
+    }
+
+    let operation_id = single_sidecar_operation_id(dir.path());
+    let sidecar_path = dir
+        .path()
+        .join("__recovery")
+        .join(format!("{operation_id}.json"));
+    let sidecar_json = std::fs::read_to_string(&sidecar_path).unwrap();
+    let sidecar: serde_json::Value = serde_json::from_str(&sidecar_json).unwrap();
+
+    let tables = sidecar["tables"]
+        .as_array()
+        .expect("sidecar tables must be an array");
+    assert!(
+        !tables.is_empty(),
+        "sidecar must pin at least one RewriteMerged table — both branches mutated Person"
+    );
+    for pin in tables {
+        let table_branch = pin
+            .get("table_branch")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "sidecar pin must record table_branch as the merge target (active_branch); \
+                     got pin {pin:?}"
+                )
+            });
+        assert_eq!(
+            table_branch, "target_branch",
+            "sidecar pin must record `table_branch` as the merge target branch (where \
+             commits actually land via publish_rewritten_merge_table → open_for_mutation), \
+             NOT entry.table_branch from the target snapshot. See merge.rs filter_map and \
+             the rationale comment at table_ops.rs:115-120. Got pin: {pin:?}"
+        );
+    }
+}
+
 /// `ensure_indices` only writes a sidecar when at least one table
 /// genuinely needs index work (per `needs_index_work_*` helpers in
 /// `db/omnigraph/table_ops.rs`). When all tables are steady-state

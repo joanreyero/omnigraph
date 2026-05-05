@@ -49,6 +49,7 @@ struct RecoveryAuditRow {
 #[derive(Debug, Clone, Deserialize)]
 struct TableOutcome {
     table_key: String,
+    from_version: u64,
     to_version: u64,
 }
 
@@ -179,6 +180,7 @@ pub async fn assert_post_recovery_invariants(
                 audit.recovery_kind, "RolledBack",
                 "audit row for {operation_id} recorded the wrong recovery_kind",
             );
+            assert_rollback_outcomes_record_drift(&audit);
             assert_recovery_commit_shape(repo_root, &audit, &tables).await?;
             assert_non_main_did_not_move_main(repo_root, &tables).await?;
             assert_idempotent_reopen(repo_root, operation_id).await?;
@@ -277,6 +279,25 @@ async fn assert_audit_to_versions_match_lance_heads(
         );
     }
     Ok(())
+}
+
+/// For RolledBack outcomes, `from_version` records the Lance HEAD
+/// observed BEFORE the restore (the actual drift) and `to_version`
+/// records the manifest pin we restored to. If both equal, the audit
+/// row is uninformative — operators cannot tell how far Lance HEAD
+/// drifted from the manifest. This assertion catches any regression
+/// that reverts `from_version` to `manifest_pinned`.
+fn assert_rollback_outcomes_record_drift(audit: &RecoveryAuditRow) {
+    for outcome in &audit.per_table_outcomes {
+        assert!(
+            outcome.from_version > outcome.to_version,
+            "rollback outcome for {} must record drift via `from_version > to_version` \
+             (Lance HEAD before restore > manifest pin restored to); got from={}, to={}",
+            outcome.table_key,
+            outcome.from_version,
+            outcome.to_version,
+        );
+    }
 }
 
 async fn assert_non_main_did_not_move_main(

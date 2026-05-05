@@ -562,6 +562,7 @@ async fn process_sidecar(
         states.push(ClassifiedTable {
             classification: classify_table(pin, lance_head, manifest_pinned, sidecar.writer_kind),
             manifest_pinned,
+            lance_head,
         });
     }
     let classifications = states
@@ -682,6 +683,12 @@ async fn process_sidecar(
 struct ClassifiedTable {
     classification: TableClassification,
     manifest_pinned: u64,
+    /// Lance HEAD observed at classification time. Captured so the
+    /// rollback audit's `from_version` can record where Lance HEAD was
+    /// before `Dataset::restore` ran (operators reading
+    /// `_graph_commit_recoveries.lance` see actual drift, not
+    /// `from_version == to_version == manifest_pinned`).
+    lance_head: u64,
 }
 
 async fn roll_back_sidecar(
@@ -711,12 +718,13 @@ async fn roll_back_sidecar(
                 state.manifest_pinned,
             )
             .await?;
+            // `from_version` records the Lance HEAD observed BEFORE the
+            // restore (the actual drift), not the manifest pin. Operators
+            // reading `_graph_commit_recoveries.lance` see "rolled back
+            // from v7 to v5" rather than "v5 → v5".
             outcomes.push(TableOutcome {
                 table_key: pin.table_key.clone(),
-                from_version: snapshot
-                    .entry(&pin.table_key)
-                    .map(|e| e.table_version)
-                    .unwrap_or(0),
+                from_version: state.lance_head,
                 to_version: state.manifest_pinned,
             });
         }

@@ -1206,7 +1206,19 @@ impl Omnigraph {
                     table_path: self.table_store().dataset_uri(&entry.table_path),
                     expected_version: entry.table_version,
                     post_commit_pin: entry.table_version + 1,
-                    table_branch: entry.table_branch.clone(),
+                    // Use the merge target branch (where commits actually
+                    // land), NOT entry.table_branch (where the table
+                    // currently lives). publish_rewritten_merge_table calls
+                    // open_for_mutation, which forks an inherited-from-main
+                    // table to active_branch on first write — the resulting
+                    // Lance commit lands on active_branch. Recovery's
+                    // open_lance_head must check the same branch, otherwise
+                    // an inherited-table feature-to-feature merge classifies
+                    // as NoMovement and the all-or-nothing rollback skips
+                    // the orphaned post-Phase-B HEAD on the target ref.
+                    // Same rationale as table_ops.rs:115-120 in
+                    // ensure_indices_for_branch.
+                    table_branch: self.active_branch().map(str::to_string),
                 })
             })
             .collect();
