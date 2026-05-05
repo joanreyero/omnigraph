@@ -467,6 +467,37 @@ async fn composite_flow_multi_branch_sequential_merges() {
         6,
         "main must not see feat-a's writes"
     );
+    // Branch isolation through the QUERY ENGINE (not just dataset-direct):
+    // `get_person` on feat-a finds Eve (uses the BTree index on Person.name);
+    // the same query on main finds nothing. Catches regressions where the
+    // planner resolves the wrong snapshot for branch-targeted reads.
+    let eve_on_feat_a = query_branch(
+        &mut db,
+        "feat-a",
+        TEST_QUERIES,
+        "get_person",
+        &mixed_params(&[("$name", "Eve")], &[]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        eve_on_feat_a.num_rows(),
+        1,
+        "get_person(Eve) on feat-a must return 1 row through the query engine"
+    );
+    let eve_on_main = query_main(
+        &mut db,
+        TEST_QUERIES,
+        "get_person",
+        &mixed_params(&[("$name", "Eve")], &[]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        eve_on_main.num_rows(),
+        0,
+        "get_person(Eve) on main must return 0 rows — feat-a's writes are isolated"
+    );
 
     // ─────────────────────────────────────────────────────────────────
     // Step 6: branch_create feat-b from main. feat-b's base is main's
@@ -513,13 +544,31 @@ async fn composite_flow_multi_branch_sequential_merges() {
         3,
         "main's Knows must be untouched by feat-a's edge insert"
     );
+    // Edge traversal through the QUERY ENGINE on feat-a: `friends_of(Grace)`
+    // exercises the Knows topology + index from feat-a's snapshot. Catches
+    // regressions in graph-index lookup against branch-local edge tables.
+    let graces_friends = query_branch(
+        &mut db,
+        "feat-a",
+        TEST_QUERIES,
+        "friends_of",
+        &mixed_params(&[("$name", "Grace")], &[]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        graces_friends.num_rows(),
+        1,
+        "friends_of(Grace) on feat-a must return Eve via the query engine + Knows index"
+    );
 
     // ─────────────────────────────────────────────────────────────────
-    // Step 9: capture pre-merge-feat-a state. main version + main snapshot
-    // version (these may diverge slightly in branch_merge plumbing — both
-    // are useful for time-travel later).
+    // Step 9: capture pre-merge-feat-a state. Both a version (for direct
+    // dataset open) AND a SnapshotId (for query-engine time-travel) are
+    // captured so we can later assert historical state through both paths.
     // ─────────────────────────────────────────────────────────────────
     let pre_merge_a_version = version_main(&db).await.unwrap();
+    let pre_merge_a_snap_id = db.resolve_snapshot("main").await.unwrap();
     let pre_merge_a_persons = count_rows(&db, "node:Person").await;
     assert_eq!(pre_merge_a_persons, 6);
 
@@ -535,6 +584,37 @@ async fn composite_flow_multi_branch_sequential_merges() {
     );
     assert_eq!(count_rows(&db, "node:Person").await, 8);
     assert_eq!(count_rows(&db, "edge:Knows").await, 4);
+    // Post-merge query-engine readback: Eve is now reachable on main via
+    // `get_person` (BTree index lookup) and Grace's edge to Eve survives
+    // the merge as a traversable edge via `friends_of`. This is the
+    // load-bearing check that `publish_rewritten_merge_table`'s Phase 3
+    // index rebuild produced a queryable result, not just data on disk.
+    let eve_on_main_post_merge = query_main(
+        &mut db,
+        TEST_QUERIES,
+        "get_person",
+        &mixed_params(&[("$name", "Eve")], &[]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        eve_on_main_post_merge.num_rows(),
+        1,
+        "Eve must be findable on main post-merge through the BTree index"
+    );
+    let graces_friends_on_main = query_main(
+        &mut db,
+        TEST_QUERIES,
+        "friends_of",
+        &mixed_params(&[("$name", "Grace")], &[]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        graces_friends_on_main.num_rows(),
+        1,
+        "friends_of(Grace) on main post-merge must traverse the rebuilt Knows index"
+    );
 
     // ─────────────────────────────────────────────────────────────────
     // Step 11: mutate main AFTER the first merge — insert "Helen". This
@@ -557,6 +637,7 @@ async fn composite_flow_multi_branch_sequential_merges() {
     // assertions in step 14.
     // ─────────────────────────────────────────────────────────────────
     let pre_merge_b_version = version_main(&db).await.unwrap();
+    let pre_merge_b_snap_id = db.resolve_snapshot("main").await.unwrap();
     assert!(
         pre_merge_b_version > post_merge_a_version,
         "Helen insert must advance main's version past the merge"
@@ -579,11 +660,34 @@ async fn composite_flow_multi_branch_sequential_merges() {
         10,
         "main must contain all 10 Persons after both merges land"
     );
+    // Aggregation through the QUERY ENGINE over the fully merged graph:
+    // `total_people` returns count(Person) = 10. Catches regressions in
+    // group-by/count execution against a multi-fragment table whose
+    // current shape was produced by two sequential merges.
+    let total_post_merges = query_main(
+        &mut db,
+        TEST_QUERIES,
+        "total_people",
+        &ParamMap::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        total_post_merges.num_rows(),
+        1,
+        "total_people aggregation must return exactly one summary row"
+    );
 
     // ─────────────────────────────────────────────────────────────────
     // Step 14: time-travel to pre-merge-a-version. Reads must return
     // main's pre-feat-a-merge state: 6 Persons, no Eve / Grace / Frank /
     // Helen. Catches snapshot leakage from later commits.
+    //
+    // Verified through TWO paths: direct dataset open (catches manifest-
+    // pin propagation regressions) AND `.gq` query against the captured
+    // SnapshotId (catches planner / index-state regressions where a
+    // historical query accidentally resolves against current indices
+    // instead of the snapshot's frozen index state).
     // ─────────────────────────────────────────────────────────────────
     let pre_a_snap = db.snapshot_at_version(pre_merge_a_version).await.unwrap();
     let pre_a_persons = pre_a_snap
@@ -595,7 +699,7 @@ async fn composite_flow_multi_branch_sequential_merges() {
         .unwrap();
     assert_eq!(
         pre_a_persons, 6,
-        "time-travel to pre-merge-a must show exactly 6 Persons"
+        "time-travel to pre-merge-a must show exactly 6 Persons (dataset-direct)"
     );
     let pre_a_knows = pre_a_snap
         .open("edge:Knows")
@@ -607,6 +711,40 @@ async fn composite_flow_multi_branch_sequential_merges() {
     assert_eq!(
         pre_a_knows, 3,
         "time-travel to pre-merge-a must show exactly 3 Knows edges (no Grace → Eve)"
+    );
+    // `.gq` query against the captured SnapshotId — the planner must
+    // resolve `total_people` against the historical Person snapshot,
+    // not main's current head.
+    let pre_a_total_via_query = db
+        .query(
+            ReadTarget::Snapshot(pre_merge_a_snap_id.clone()),
+            TEST_QUERIES,
+            "total_people",
+            &ParamMap::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        pre_a_total_via_query.num_rows(),
+        1,
+        "time-travel total_people via query engine returns exactly one summary row"
+    );
+    // Edge-traversal time-travel: Grace and her Knows(Grace → Eve) edge
+    // do not exist at pre_merge_a, so `friends_of(Grace)` must return 0
+    // even though Grace's row IS visible at later snapshots.
+    let pre_a_grace_friends = db
+        .query(
+            ReadTarget::Snapshot(pre_merge_a_snap_id.clone()),
+            TEST_QUERIES,
+            "friends_of",
+            &mixed_params(&[("$name", "Grace")], &[]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        pre_a_grace_friends.num_rows(),
+        0,
+        "friends_of(Grace) at pre-merge-a must return 0 — Grace's row predates the merge"
     );
 
     // ─────────────────────────────────────────────────────────────────
@@ -624,6 +762,38 @@ async fn composite_flow_multi_branch_sequential_merges() {
     assert_eq!(
         pre_b_persons, 9,
         "time-travel to pre-merge-b must show 9 Persons (post-feat-a-merge + Helen, pre-feat-b-merge)"
+    );
+    // Frank does not exist at pre-merge-b (he was on feat-b only); a
+    // historical `get_person(Frank)` via the query engine must return 0.
+    let pre_b_frank_via_query = db
+        .query(
+            ReadTarget::Snapshot(pre_merge_b_snap_id.clone()),
+            TEST_QUERIES,
+            "get_person",
+            &mixed_params(&[("$name", "Frank")], &[]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        pre_b_frank_via_query.num_rows(),
+        0,
+        "Frank must not appear at pre-merge-b — his row only enters main when feat-b merges"
+    );
+    // Eve is present at pre-merge-b (feat-a already landed); the
+    // historical query must find her.
+    let pre_b_eve_via_query = db
+        .query(
+            ReadTarget::Snapshot(pre_merge_b_snap_id),
+            TEST_QUERIES,
+            "get_person",
+            &mixed_params(&[("$name", "Eve")], &[]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        pre_b_eve_via_query.num_rows(),
+        1,
+        "Eve must be findable at pre-merge-b — she landed on main during feat-a's merge"
     );
 
     // ─────────────────────────────────────────────────────────────────
@@ -687,5 +857,41 @@ async fn composite_flow_multi_branch_sequential_merges() {
     assert_eq!(
         leftover_sidecars, 0,
         "clean compositional flow must not leave recovery sidecars on disk"
+    );
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 19: post-reopen query-engine readback. Exercises the full
+    // read path (planner, indices, snapshot resolution) against the
+    // reopened engine — catches regressions where indices serialize
+    // correctly to disk but the reopened catalog can't bind them.
+    // ─────────────────────────────────────────────────────────────────
+    let mut db = db;
+    let post_reopen_total = query_main(
+        &mut db,
+        TEST_QUERIES,
+        "total_people",
+        &ParamMap::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        post_reopen_total.num_rows(),
+        1,
+        "total_people aggregation must work via the query engine after reopen"
+    );
+    // Edge-traversal post-reopen: Grace's Knows(Grace → Eve) survived
+    // both the merge and the reopen as a queryable graph edge.
+    let graces_friends_post_reopen = query_main(
+        &mut db,
+        TEST_QUERIES,
+        "friends_of",
+        &mixed_params(&[("$name", "Grace")], &[]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        graces_friends_post_reopen.num_rows(),
+        1,
+        "friends_of(Grace) must traverse post-reopen — index + topology bound correctly"
     );
 }
