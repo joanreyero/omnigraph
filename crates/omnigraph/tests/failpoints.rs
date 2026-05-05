@@ -232,7 +232,7 @@ async fn recovery_rolls_forward_after_finalize_publisher_failure() {
     let uri = dir.path().to_str().unwrap().to_string();
     let operation_id;
 
-    // Phase A: trigger the residual.
+    // Setup: trigger the residual.
     {
         let mut db = Omnigraph::init(&uri, helpers::TEST_SCHEMA).await.unwrap();
         let _failpoint = ScopedFailPoint::new("mutation.post_finalize_pre_publisher", "return");
@@ -272,7 +272,7 @@ async fn recovery_rolls_forward_after_finalize_publisher_failure() {
         // Drop the failpoint scope and the engine handle.
     }
 
-    // Phase B: reopen runs the recovery sweep. The sweep finds the
+    // Recovery: reopen runs the recovery sweep. The sweep finds the
     // sidecar, classifies node:Person as RolledPastExpected, decides
     // RollForward, publishes the manifest update, records the audit
     // row, deletes the sidecar.
@@ -557,7 +557,7 @@ async fn refresh_runs_roll_forward_recovery_in_process() {
 
     let mut db = Omnigraph::init(&uri, helpers::TEST_SCHEMA).await.unwrap();
 
-    // Phase A: trigger the residual (sidecar persists; manifest unchanged).
+    // Setup: trigger the residual (sidecar persists; manifest unchanged).
     {
         let _failpoint = ScopedFailPoint::new("mutation.post_finalize_pre_publisher", "return");
         let err = mutate_main(
@@ -581,7 +581,7 @@ async fn refresh_runs_roll_forward_recovery_in_process() {
         );
     }
 
-    // Phase B: explicit refresh runs roll-forward-only recovery
+    // Recovery: explicit refresh runs roll-forward-only recovery
     // in-process — no restart needed. Sidecar finds the Person drift,
     // classifies RolledPastExpected, rolls forward via publisher CAS,
     // and deletes the sidecar.
@@ -804,7 +804,7 @@ async fn finalize_publisher_residual_does_not_drift_untouched_tables() {
     .expect("Company write on a non-drifted table should succeed");
 }
 
-/// Acceptance test: a Phase A failure in the staged-index path
+/// Acceptance test: a stage-step failure in the staged-index path
 /// (`stage_create_btree_index` succeeded; `commit_staged` not yet
 /// called) leaves NO Lance-HEAD drift on the existing tables.
 /// Subsequent operations against those tables succeed without
@@ -828,7 +828,7 @@ async fn finalize_publisher_residual_does_not_drift_untouched_tables() {
 /// by `cleanup_old_versions` (or removed when a future apply at the
 /// same target path resolves the rename).
 #[tokio::test]
-async fn ensure_indices_phase_a_btree_failure_leaves_existing_tables_writable() {
+async fn ensure_indices_stage_btree_failure_leaves_existing_tables_writable() {
     let _scenario = FailScenario::setup();
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().to_str().unwrap().to_string();
@@ -1024,7 +1024,7 @@ async fn schema_apply_phase_b_failure_recovered_on_next_open() {
         version_main(&db).await.unwrap()
     };
 
-    // Phase A: trigger the residual via `schema_apply.after_staging_write`.
+    // Setup: trigger the residual via `schema_apply.after_staging_write`.
     // This failpoint fires AFTER the rewritten_tables/indexed_tables loops
     // (Lance HEAD advanced) AND AFTER the schema-state staging files are
     // written, but BEFORE the manifest publish. The recovery sidecar persists.
@@ -1079,7 +1079,7 @@ edge WorksAt: Person -> Company
         operation_id = single_sidecar_operation_id(dir.path());
     }
 
-    // Phase B: reopen runs the recovery sweep. Sidecar's writer_kind is
+    // Recovery: reopen runs the recovery sweep. Sidecar's writer_kind is
     // SchemaApply (loose-match) — classifier accepts the multi-commit
     // drift on Person, decision is RollForward, manifest extends to the
     // current Lance HEAD.
@@ -1188,7 +1188,7 @@ async fn branch_merge_phase_b_failure_recovered_on_next_open() {
         version_main(&db).await.unwrap()
     };
 
-    // Phase A: failpoint fires after the per-table publish loop completes
+    // Setup: failpoint fires after the per-table publish loop completes
     // but before commit_manifest_updates. Sidecar persists.
     {
         let mut db = Omnigraph::open(&uri).await.unwrap();
@@ -1214,7 +1214,7 @@ async fn branch_merge_phase_b_failure_recovered_on_next_open() {
         );
     }
 
-    // Phase B: reopen runs the sweep. BranchMerge uses LOOSE
+    // Recovery: reopen runs the sweep. BranchMerge uses LOOSE
     // classification — `publish_rewritten_merge_table` runs multiple
     // commit_staged calls per table (stage_merge_insert + delete_where +
     // index rebuilds), so post_commit_pin in the sidecar is a lower
@@ -1363,7 +1363,7 @@ async fn branch_merge_phase_b_failure_recovered_on_non_main_target() {
         .await
         .unwrap();
 
-    // Phase A: failpoint fires after the per-table publish loop completes
+    // Setup: failpoint fires after the per-table publish loop completes
     // but before commit_manifest_updates. Sidecar persists with
     // branch=Some("target_branch").
     {
@@ -1389,7 +1389,7 @@ async fn branch_merge_phase_b_failure_recovered_on_non_main_target() {
         operation_id = single_sidecar_operation_id(dir.path());
     }
 
-    // Phase B: reopen runs full sweep. The BranchMerge sidecar's branch
+    // Recovery: reopen runs full sweep. The BranchMerge sidecar's branch
     // = Some("target_branch"); D2 fix opens a per-branch CommitGraph
     // for the audit append so the merge-parent linkage is correct.
     let db = Omnigraph::open(&uri).await.unwrap();
@@ -1554,7 +1554,7 @@ async fn ensure_indices_phase_b_failure_does_not_leak_sidecar_when_no_work_neede
         .unwrap();
     }
 
-    // Phase A: trigger the failpoint. Steady-state ensure_indices
+    // Setup: trigger the failpoint. Steady-state ensure_indices
     // produces zero sidecar pins (the helpers scope pins to tables
     // that genuinely need work); no sidecar is written. The failpoint
     // still fires, surfacing the Err.
@@ -1590,7 +1590,7 @@ async fn ensure_indices_phase_b_failure_does_not_leak_sidecar_when_no_work_neede
         );
     }
 
-    // Phase B: reopen is a clean no-op (no sidecar to recover).
+    // Recovery: reopen is a clean no-op (no sidecar to recover).
     let _db = Omnigraph::open(&uri).await.unwrap();
 
     let recovery_dir = dir.path().join("__recovery");

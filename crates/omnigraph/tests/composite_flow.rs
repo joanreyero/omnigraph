@@ -51,7 +51,7 @@ const TEST_DATA: &str = include_str!("fixtures/test.jsonl");
 const TEST_QUERIES: &str = include_str!("fixtures/test.gq");
 
 #[tokio::test]
-async fn composite_flow_init_load_branch_merge_time_travel_optimize_cleanup() {
+async fn composite_flow_canonical_lifecycle() {
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().to_str().unwrap();
 

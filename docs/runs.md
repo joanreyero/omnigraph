@@ -163,6 +163,15 @@ are left at `Lance HEAD = manifest_pinned + 1`.
 3. **Phase C**: publisher commits the manifest.
 4. **Phase D**: writer deletes the sidecar.
 
+> **Phase letter convention.** Throughout the recovery code, log
+> messages, failpoint names (e.g. `branch_merge.post_phase_b_pre_manifest_commit`),
+> and the per-writer integration tests, "Phase A/B/C/D" refers
+> exclusively to the four-step lifecycle above. The per-table
+> staged-write contract (`stage_*` then `commit_staged`, two steps)
+> is referred to by those API verbs — never by phase letters — so a
+> reader of `recovery.rs`, `failpoints.rs`, or this document only
+> encounters phase letters in the per-writer context.
+
 A failure between Phase A and Phase D leaves the sidecar on disk. The
 next `Omnigraph::open` (gated on `OpenMode::ReadWrite`) runs the
 recovery sweep in `crates/omnigraph/src/db/manifest/recovery.rs`:
