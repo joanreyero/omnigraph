@@ -94,7 +94,7 @@ async fn graph_publish_failpoint_triggers_before_commit_append() {
 // state.
 
 #[tokio::test]
-async fn schema_apply_recovers_pre_commit_crash() {
+async fn schema_apply_pre_commit_crash_rolls_forward_via_sidecar() {
     let _scenario = FailScenario::setup();
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().to_str().unwrap().to_string();
@@ -111,11 +111,29 @@ async fn schema_apply_recovers_pre_commit_crash() {
         );
     }
 
-    // Reopen — recovery sweep should delete staging files and keep the
-    // original schema, since the manifest commit never happened.
+    // Reopen. With the sidecar protocol, a Phase B → Phase C crash
+    // (per-table commit_staged done; manifest publish not yet) is
+    // recoverable: the sidecar's `additional_registrations` carries the
+    // intent to register `node:Company`, schema-state recovery promotes
+    // the staging files, and the manifest-drift sweep publishes the
+    // RegisterTable + Update so the manifest catches up to the schema
+    // the writer already declared. The orphan-dataset-on-disk-with-no-
+    // manifest-entry corruption that pre-this-protocol recoveries left
+    // behind is closed.
     let db = Omnigraph::open(&uri).await.unwrap();
-    assert_eq!(db.schema_source(), SCHEMA_V1);
+    assert_eq!(
+        db.schema_source(),
+        SCHEMA_V2_ADDED_TYPE,
+        "live schema must reflect the rolled-forward apply (Company added)"
+    );
     assert_no_staging_files(dir.path());
+    // node:Company must be registered in the manifest (queryable);
+    // pre-protocol recoveries left it as an orphan dataset on disk.
+    let company_rows = helpers::count_rows(&db, "node:Company").await;
+    assert_eq!(
+        company_rows, 0,
+        "node:Company must have a manifest entry post-recovery"
+    );
 }
 
 #[tokio::test]
@@ -1101,6 +1119,21 @@ edge WorksAt: Person -> Company
     assert!(
         live_schema.contains("node Tag"),
         "_schema.pg must reflect the NEW schema (Tag type added); got:\n{live_schema}",
+    );
+
+    // Catalog ↔ manifest agreement: the new `node:Tag` type the schema
+    // declares must have a manifest entry the engine can read against.
+    // Without registrations / tombstones in the sidecar, recovery's
+    // `roll_forward_all` only publishes Updates for rewritten tables;
+    // added tables (Tag) end up as orphan datasets on disk with no
+    // manifest entry, and the live schema declares a type the manifest
+    // doesn't know about.
+    let db = Omnigraph::open(&uri).await.unwrap();
+    let tag_rows = helpers::count_rows(&db, "node:Tag").await;
+    assert_eq!(
+        tag_rows, 0,
+        "node:Tag must have a manifest entry (with 0 rows) post-recovery; \
+         a panic here means recovery failed to register the added table"
     );
 }
 

@@ -174,7 +174,45 @@ pub(super) async fn apply_schema_with_lock(
             })
         })
         .collect();
-    let recovery_handle = if recovery_pins.is_empty() {
+    // Capture additional registrations + tombstones for the sidecar so
+    // recovery can publish them alongside the per-table updates. Without
+    // this, an added type's dataset is created in Phase B but the
+    // manifest never gains an entry for it after roll-forward — the
+    // live `_schema.pg` declares a type the manifest doesn't know about
+    // and reads through the engine fail with "no manifest entry for X".
+    let mut sidecar_registrations: Vec<crate::db::manifest::SidecarTableRegistration> = Vec::new();
+    for table_key in &added_tables {
+        sidecar_registrations.push(crate::db::manifest::SidecarTableRegistration {
+            table_key: table_key.clone(),
+            table_path: table_path_for_table_key(table_key)?,
+            table_branch: None,
+        });
+    }
+    for target_table_key in renamed_tables.keys() {
+        sidecar_registrations.push(crate::db::manifest::SidecarTableRegistration {
+            table_key: target_table_key.clone(),
+            table_path: table_path_for_table_key(target_table_key)?,
+            table_branch: None,
+        });
+    }
+    let mut sidecar_tombstones: Vec<crate::db::manifest::SidecarTombstone> = Vec::new();
+    for source_table_key in renamed_tables.values() {
+        let source_entry = snapshot.entry(source_table_key).ok_or_else(|| {
+            OmniError::manifest(format!(
+                "missing source table '{}' for schema rename when building recovery sidecar",
+                source_table_key
+            ))
+        })?;
+        sidecar_tombstones.push(crate::db::manifest::SidecarTombstone {
+            table_key: source_table_key.clone(),
+            tombstone_version: source_entry.table_version.saturating_add(1),
+        });
+    }
+
+    let recovery_handle = if recovery_pins.is_empty()
+        && sidecar_registrations.is_empty()
+        && sidecar_tombstones.is_empty()
+    {
         None
     } else {
         // `branch=None` because schema_apply publishes against main —
@@ -184,12 +222,14 @@ pub(super) async fn apply_schema_with_lock(
         // the coordinator's active branch, which is the pre-lock branch).
         // If the lock release fires before recovery, the lock branch is
         // gone — the sidecar must not reference it.
-        let sidecar = crate::db::manifest::new_sidecar(
+        let mut sidecar = crate::db::manifest::new_sidecar(
             crate::db::manifest::SidecarKind::SchemaApply,
             None,
             db.audit_actor_id.clone(),
             recovery_pins,
         );
+        sidecar.additional_registrations = sidecar_registrations;
+        sidecar.tombstones = sidecar_tombstones;
         Some(
             crate::db::manifest::write_sidecar(db.root_uri(), db.storage_adapter(), &sidecar)
                 .await?,
