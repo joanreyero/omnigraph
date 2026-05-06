@@ -151,6 +151,91 @@ pub(super) async fn apply_schema_with_lock(
     let mut table_updates = HashMap::<String, crate::db::SubTableUpdate>::new();
     let mut table_tombstones = HashMap::<String, u64>::new();
 
+    // Recovery sidecar: protect the per-table commit_staged loop in
+    // rewritten_tables + indexed_tables. The post_commit_pin we record
+    // here is a lower bound (expected + 1); the classifier loose-matches
+    // for SidecarKind::SchemaApply because the actual N depends on how
+    // many indices need building. See classify_table's loose-match arm.
+    let recovery_pins: Vec<crate::db::manifest::SidecarTablePin> = rewritten_tables
+        .iter()
+        .chain(indexed_tables.iter().filter(|t| {
+            !rewritten_tables.contains(*t)
+                && !added_tables.contains(*t)
+                && !renamed_tables.contains_key(*t)
+        }))
+        .filter_map(|table_key| {
+            let entry = snapshot.entry(table_key)?;
+            Some(crate::db::manifest::SidecarTablePin {
+                table_key: table_key.clone(),
+                table_path: db.table_store.dataset_uri(&entry.table_path),
+                expected_version: entry.table_version,
+                post_commit_pin: entry.table_version + 1,
+                table_branch: entry.table_branch.clone(),
+            })
+        })
+        .collect();
+    // Capture additional registrations + tombstones for the sidecar so
+    // recovery can publish them alongside the per-table updates. Without
+    // this, an added type's dataset is created in Phase B but the
+    // manifest never gains an entry for it after roll-forward — the
+    // live `_schema.pg` declares a type the manifest doesn't know about
+    // and reads through the engine fail with "no manifest entry for X".
+    let mut sidecar_registrations: Vec<crate::db::manifest::SidecarTableRegistration> = Vec::new();
+    for table_key in &added_tables {
+        sidecar_registrations.push(crate::db::manifest::SidecarTableRegistration {
+            table_key: table_key.clone(),
+            table_path: table_path_for_table_key(table_key)?,
+            table_branch: None,
+        });
+    }
+    for target_table_key in renamed_tables.keys() {
+        sidecar_registrations.push(crate::db::manifest::SidecarTableRegistration {
+            table_key: target_table_key.clone(),
+            table_path: table_path_for_table_key(target_table_key)?,
+            table_branch: None,
+        });
+    }
+    let mut sidecar_tombstones: Vec<crate::db::manifest::SidecarTombstone> = Vec::new();
+    for source_table_key in renamed_tables.values() {
+        let source_entry = snapshot.entry(source_table_key).ok_or_else(|| {
+            OmniError::manifest(format!(
+                "missing source table '{}' for schema rename when building recovery sidecar",
+                source_table_key
+            ))
+        })?;
+        sidecar_tombstones.push(crate::db::manifest::SidecarTombstone {
+            table_key: source_table_key.clone(),
+            tombstone_version: source_entry.table_version.saturating_add(1),
+        });
+    }
+
+    let recovery_handle = if recovery_pins.is_empty()
+        && sidecar_registrations.is_empty()
+        && sidecar_tombstones.is_empty()
+    {
+        None
+    } else {
+        // `branch=None` because schema_apply publishes against main —
+        // the `__schema_apply_lock__` branch is purely a serialization
+        // sentinel (acquire_schema_apply_lock creates it; the manifest
+        // publish via coordinator.commit_changes_with_actor below targets
+        // the coordinator's active branch, which is the pre-lock branch).
+        // If the lock release fires before recovery, the lock branch is
+        // gone — the sidecar must not reference it.
+        let mut sidecar = crate::db::manifest::new_sidecar(
+            crate::db::manifest::SidecarKind::SchemaApply,
+            None,
+            db.audit_actor_id.clone(),
+            recovery_pins,
+        );
+        sidecar.additional_registrations = sidecar_registrations;
+        sidecar.tombstones = sidecar_tombstones;
+        Some(
+            crate::db::manifest::write_sidecar(db.root_uri(), db.storage_adapter(), &sidecar)
+                .await?,
+        )
+    };
+
     for table_key in &added_tables {
         let table_path = table_path_for_table_key(table_key)?;
         let dataset_uri = db.table_store.dataset_uri(&table_path);
@@ -237,8 +322,8 @@ pub(super) async fn apply_schema_with_lock(
         )
         .await?;
         let dataset_uri = db.table_store.dataset_uri(&entry.table_path);
-        // MR-793 Phase 6: route through stage_overwrite + commit_staged
-        // for non-empty batches. Lance's `InsertBuilder::execute_uncommitted`
+        // Route through stage_overwrite + commit_staged for non-empty
+        // batches. Lance's `InsertBuilder::execute_uncommitted`
         // errors on empty data (lance-4.0.0 `src/dataset/write/insert.rs:144`),
         // so the empty-rewrite case stays on `overwrite_dataset` (which
         // accepts empty input). The empty case is rare in schema_apply
@@ -257,11 +342,7 @@ pub(super) async fn apply_schema_with_lock(
             // open the wrong HEAD here.
             let existing = db
                 .table_store
-                .open_dataset_head_for_write(
-                    table_key,
-                    &dataset_uri,
-                    entry.table_branch.as_deref(),
-                )
+                .open_dataset_head_for_write(table_key, &dataset_uri, entry.table_branch.as_deref())
                 .await?;
             let staged = db.table_store.stage_overwrite(&existing, batch).await?;
             db.table_store
@@ -336,7 +417,7 @@ pub(super) async fn apply_schema_with_lock(
         }));
     }
 
-    db.refresh().await?;
+    db.refresh_coordinator_only().await?;
     if db.version() != base_manifest_version {
         return Err(OmniError::manifest_conflict(format!(
             "schema apply lost its write lease: main advanced from v{} to v{} while schema apply was in progress",
@@ -353,6 +434,8 @@ pub(super) async fn apply_schema_with_lock(
     // `recover_schema_state_files`:
     //   - crash before commit  → manifest unchanged; staging deleted on open
     //   - crash after commit   → manifest advanced; staging renamed on open
+    crate::failpoints::maybe_fail("schema_apply.before_staging_write")?;
+
     let staging_pg_uri = schema_source_staging_uri(&db.root_uri);
     db.storage
         .write_text(&staging_pg_uri, desired_schema_source)
@@ -396,6 +479,23 @@ pub(super) async fn apply_schema_with_lock(
         db.invalidate_graph_index().await;
     }
 
+    // Recovery sidecar lifecycle: delete after the manifest commit
+    // succeeded. Best-effort: if this delete fails, the sidecar persists
+    // and on next open the sweep sees every table at the post-publish
+    // manifest pin (NoMovement) and the sidecar is treated as a stale
+    // artifact (recovery is a no-op and the sidecar is cleaned up).
+    // Failing the schema_apply call would report failure for a migration
+    // that already succeeded.
+    if let Some(handle) = recovery_handle {
+        if let Err(err) = crate::db::manifest::delete_sidecar(&handle, db.storage_adapter()).await {
+            tracing::warn!(
+                error = %err,
+                operation_id = handle.operation_id.as_str(),
+                "recovery sidecar cleanup failed; the next open's recovery sweep will resolve it"
+            );
+        }
+    }
+
     Ok(SchemaApplyResult {
         supported: true,
         applied: true,
@@ -405,13 +505,13 @@ pub(super) async fn apply_schema_with_lock(
 }
 
 pub(super) async fn ensure_schema_apply_idle(db: &mut Omnigraph, operation: &str) -> Result<()> {
-    db.refresh().await?;
+    db.refresh_coordinator_only().await?;
     ensure_schema_apply_not_locked(db, operation).await
 }
 
 pub(super) async fn acquire_schema_apply_lock(db: &mut Omnigraph) -> Result<()> {
     db.ensure_schema_state_valid().await?;
-    db.refresh().await?;
+    db.refresh_coordinator_only().await?;
     let branches = db.coordinator.all_branches().await?;
     if branches
         .iter()
@@ -425,7 +525,7 @@ pub(super) async fn acquire_schema_apply_lock(db: &mut Omnigraph) -> Result<()> 
     db.coordinator
         .branch_create(SCHEMA_APPLY_LOCK_BRANCH)
         .await?;
-    db.refresh().await?;
+    db.refresh_coordinator_only().await?;
 
     let blocking_branches = db
         .coordinator
@@ -449,7 +549,12 @@ pub(super) async fn release_schema_apply_lock(db: &mut Omnigraph) -> Result<()> 
     db.coordinator
         .branch_delete(SCHEMA_APPLY_LOCK_BRANCH)
         .await?;
-    db.refresh().await
+    // Use refresh_coordinator_only — the full Omnigraph::refresh would
+    // run roll-forward-only recovery, and on the failure path the
+    // in-flight schema_apply sidecar is still on disk; recovery would
+    // race the caller's own publish (or roll forward an aborted apply
+    // we want to leave for next-open).
+    db.refresh_coordinator_only().await
 }
 
 pub(super) async fn ensure_schema_apply_not_locked(db: &Omnigraph, operation: &str) -> Result<()> {
