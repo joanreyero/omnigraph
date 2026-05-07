@@ -73,7 +73,7 @@ pub async fn load_jsonl_file(db: &mut Omnigraph, path: &str, mode: LoadMode) -> 
 
 impl Omnigraph {
     pub async fn ingest(
-        &mut self,
+        &self,
         branch: &str,
         from: Option<&str>,
         data: &str,
@@ -83,7 +83,7 @@ impl Omnigraph {
     }
 
     pub async fn ingest_as(
-        &mut self,
+        &self,
         branch: &str,
         from: Option<&str>,
         data: &str,
@@ -95,7 +95,7 @@ impl Omnigraph {
     }
 
     pub async fn ingest_file(
-        &mut self,
+        &self,
         branch: &str,
         from: Option<&str>,
         path: &str,
@@ -105,7 +105,7 @@ impl Omnigraph {
     }
 
     pub async fn ingest_file_as(
-        &mut self,
+        &self,
         branch: &str,
         from: Option<&str>,
         path: &str,
@@ -117,7 +117,7 @@ impl Omnigraph {
     }
 
     async fn ingest_with_current_actor(
-        &mut self,
+        &self,
         branch: &str,
         from: Option<&str>,
         data: &str,
@@ -149,12 +149,12 @@ impl Omnigraph {
         })
     }
 
-    pub async fn load(&mut self, branch: &str, data: &str, mode: LoadMode) -> Result<LoadResult> {
+    pub async fn load(&self, branch: &str, data: &str, mode: LoadMode) -> Result<LoadResult> {
         self.load_as(branch, data, mode, None).await
     }
 
     pub async fn load_as(
-        &mut self,
+        &self,
         branch: &str,
         data: &str,
         mode: LoadMode,
@@ -180,7 +180,7 @@ impl Omnigraph {
     }
 
     pub async fn load_file(
-        &mut self,
+        &self,
         branch: &str,
         path: &str,
         mode: LoadMode,
@@ -190,7 +190,7 @@ impl Omnigraph {
     }
 
     async fn load_direct_on_branch(
-        &mut self,
+        &self,
         branch: Option<&str>,
         data: &str,
         mode: LoadMode,
@@ -235,7 +235,7 @@ impl LoadResult {
 }
 
 async fn load_jsonl_reader<R: BufRead>(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     branch: Option<&str>,
     reader: R,
     mode: LoadMode,

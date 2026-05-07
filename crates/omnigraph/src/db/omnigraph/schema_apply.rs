@@ -12,7 +12,7 @@ pub(super) async fn plan_schema(
 }
 
 pub(super) async fn apply_schema(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     desired_schema_source: &str,
 ) -> Result<SchemaApplyResult> {
     acquire_schema_apply_lock(db).await?;
@@ -27,7 +27,7 @@ pub(super) async fn apply_schema(
 }
 
 pub(super) async fn apply_schema_with_lock(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     desired_schema_source: &str,
 ) -> Result<SchemaApplyResult> {
     db.ensure_schema_state_valid().await?;
@@ -536,7 +536,7 @@ pub(super) async fn ensure_schema_apply_idle(db: &Omnigraph, operation: &str) ->
     ensure_schema_apply_not_locked(db, operation).await
 }
 
-pub(super) async fn acquire_schema_apply_lock(db: &mut Omnigraph) -> Result<()> {
+pub(super) async fn acquire_schema_apply_lock(db: &Omnigraph) -> Result<()> {
     db.ensure_schema_state_valid().await?;
     db.refresh_coordinator_only().await?;
     let branches = db.coordinator.lock().await.all_branches().await?;
@@ -576,7 +576,7 @@ pub(super) async fn acquire_schema_apply_lock(db: &mut Omnigraph) -> Result<()> 
     Ok(())
 }
 
-pub(super) async fn release_schema_apply_lock(db: &mut Omnigraph) -> Result<()> {
+pub(super) async fn release_schema_apply_lock(db: &Omnigraph) -> Result<()> {
     db.coordinator
         .lock()
         .await

@@ -74,7 +74,7 @@ pub struct TableCleanupStats {
 
 /// Run Lance `compact_files` on every node + edge table on `main`.
 /// Tables run in parallel (bounded concurrency).
-pub async fn optimize_all_tables(db: &mut Omnigraph) -> Result<Vec<TableOptimizeStats>> {
+pub async fn optimize_all_tables(db: &Omnigraph) -> Result<Vec<TableOptimizeStats>> {
     db.ensure_schema_state_valid().await?;
     db.ensure_schema_apply_idle("optimize").await?;
 

@@ -670,7 +670,7 @@ fn enforce_no_mixed_destructive_constructive(
 
 impl Omnigraph {
     pub async fn mutate(
-        &mut self,
+        &self,
         branch: &str,
         query_source: &str,
         query_name: &str,
@@ -681,7 +681,7 @@ impl Omnigraph {
     }
 
     pub async fn mutate_as(
-        &mut self,
+        &self,
         branch: &str,
         query_source: &str,
         query_name: &str,
@@ -693,7 +693,7 @@ impl Omnigraph {
     }
 
     async fn mutate_with_current_actor(
-        &mut self,
+        &self,
         branch: &str,
         query_source: &str,
         query_name: &str,
@@ -799,7 +799,7 @@ impl Omnigraph {
     }
 
     async fn execute_named_mutation(
-        &mut self,
+        &self,
         query_source: &str,
         query_name: &str,
         params: &ParamMap,
@@ -863,7 +863,7 @@ impl Omnigraph {
     }
 
     async fn execute_insert(
-        &mut self,
+        &self,
         type_name: &str,
         assignments: &[IRAssignment],
         params: &ParamMap,
@@ -977,7 +977,7 @@ impl Omnigraph {
     }
 
     async fn execute_update(
-        &mut self,
+        &self,
         type_name: &str,
         assignments: &[IRAssignment],
         predicate: &IRMutationPredicate,
@@ -1102,7 +1102,7 @@ impl Omnigraph {
     }
 
     async fn execute_delete(
-        &mut self,
+        &self,
         type_name: &str,
         predicate: &IRMutationPredicate,
         params: &ParamMap,
@@ -1120,7 +1120,7 @@ impl Omnigraph {
     }
 
     async fn execute_delete_node(
-        &mut self,
+        &self,
         type_name: &str,
         predicate: &IRMutationPredicate,
         params: &ParamMap,
@@ -1251,7 +1251,7 @@ impl Omnigraph {
     }
 
     async fn execute_delete_edge(
-        &mut self,
+        &self,
         type_name: &str,
         predicate: &IRMutationPredicate,
         params: &ParamMap,

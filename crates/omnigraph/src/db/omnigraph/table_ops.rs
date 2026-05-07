@@ -21,12 +21,12 @@ pub(super) async fn graph_index_for_resolved(
     db.runtime_cache.graph_index(resolved, &catalog).await
 }
 
-pub(super) async fn ensure_indices(db: &mut Omnigraph) -> Result<()> {
+pub(super) async fn ensure_indices(db: &Omnigraph) -> Result<()> {
     let current_branch = db.coordinator.lock().await.current_branch().map(str::to_string);
     ensure_indices_for_branch(db, current_branch.as_deref()).await
 }
 
-pub(super) async fn ensure_indices_on(db: &mut Omnigraph, branch: &str) -> Result<()> {
+pub(super) async fn ensure_indices_on(db: &Omnigraph, branch: &str) -> Result<()> {
     let branch = normalize_branch_name(branch)?;
     ensure_indices_for_branch(db, branch.as_deref()).await
 }
@@ -69,7 +69,7 @@ pub(super) async fn failpoint_publish_table_head_without_index_rebuild_for_test(
 }
 
 pub(super) async fn ensure_indices_for_branch(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     branch: Option<&str>,
 ) -> Result<()> {
     db.ensure_schema_state_valid().await?;
@@ -726,7 +726,7 @@ async fn prepare_updates_for_commit(
 }
 
 async fn commit_prepared_updates(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     updates: &[crate::db::SubTableUpdate],
     actor_id: Option<&str>,
 ) -> Result<u64> {
@@ -743,7 +743,7 @@ async fn commit_prepared_updates(
 }
 
 async fn commit_prepared_updates_with_expected(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     updates: &[crate::db::SubTableUpdate],
     expected_table_versions: &std::collections::HashMap<String, u64>,
     actor_id: Option<&str>,
@@ -761,7 +761,7 @@ async fn commit_prepared_updates_with_expected(
 }
 
 pub(super) async fn commit_prepared_updates_on_branch(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     branch: Option<&str>,
     updates: &[crate::db::SubTableUpdate],
     actor_id: Option<&str>,
@@ -788,7 +788,7 @@ pub(super) async fn commit_prepared_updates_on_branch(
 }
 
 pub(super) async fn commit_prepared_updates_on_branch_with_expected(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     branch: Option<&str>,
     updates: &[crate::db::SubTableUpdate],
     expected_table_versions: &std::collections::HashMap<String, u64>,
@@ -835,14 +835,14 @@ pub(super) async fn commit_updates(
 }
 
 pub(super) async fn commit_manifest_updates(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     updates: &[crate::db::SubTableUpdate],
 ) -> Result<u64> {
     db.coordinator.lock().await.commit_manifest_updates(updates).await
 }
 
 pub(super) async fn record_merge_commit(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     manifest_version: u64,
     parent_commit_id: &str,
     merged_parent_commit_id: &str,
@@ -863,7 +863,7 @@ pub(super) async fn record_merge_commit(
 /// `expected_table_versions` map asserts the manifest's pre-write per-table
 /// versions; mismatches surface as `ManifestConflictDetails::ExpectedVersionMismatch`.
 pub(super) async fn commit_updates_on_branch_with_expected(
-    db: &mut Omnigraph,
+    db: &Omnigraph,
     branch: Option<&str>,
     updates: &[crate::db::SubTableUpdate],
     expected_table_versions: &std::collections::HashMap<String, u64>,
@@ -881,7 +881,7 @@ pub(super) async fn commit_updates_on_branch_with_expected(
     .await
 }
 
-pub(super) async fn ensure_commit_graph_initialized(db: &mut Omnigraph) -> Result<()> {
+pub(super) async fn ensure_commit_graph_initialized(db: &Omnigraph) -> Result<()> {
     db.coordinator.lock().await.ensure_commit_graph_initialized().await
 }
 

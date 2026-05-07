@@ -1008,12 +1008,12 @@ async fn publish_rewritten_merge_table(
 }
 
 impl Omnigraph {
-    pub async fn branch_merge(&mut self, source: &str, target: &str) -> Result<MergeOutcome> {
+    pub async fn branch_merge(&self, source: &str, target: &str) -> Result<MergeOutcome> {
         self.branch_merge_as(source, target, None).await
     }
 
     pub async fn branch_merge_as(
-        &mut self,
+        &self,
         source: &str,
         target: &str,
         actor_id: Option<&str>,
@@ -1023,7 +1023,7 @@ impl Omnigraph {
     }
 
     async fn branch_merge_impl(
-        &mut self,
+        &self,
         source: &str,
         target: &str,
         actor_id: Option<&str>,
@@ -1101,7 +1101,7 @@ impl Omnigraph {
     }
 
     async fn branch_merge_on_current_target(
-        &mut self,
+        &self,
         base_snapshot: &Snapshot,
         source_snapshot: &Snapshot,
         target_head_commit_id: &str,

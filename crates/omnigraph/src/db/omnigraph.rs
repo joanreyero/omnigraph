@@ -278,7 +278,7 @@ impl Omnigraph {
         schema_apply::plan_schema(self, desired_schema_source).await
     }
 
-    pub async fn apply_schema(&mut self, desired_schema_source: &str) -> Result<SchemaApplyResult> {
+    pub async fn apply_schema(&self, desired_schema_source: &str) -> Result<SchemaApplyResult> {
         schema_apply::apply_schema(self, desired_schema_source).await
     }
 
@@ -647,11 +647,11 @@ impl Omnigraph {
     /// unbranched subtables keep inheriting `main`, while subtables inherited
     /// from an ancestor branch are first forked into the active branch before
     /// their index metadata is updated.
-    pub async fn ensure_indices(&mut self) -> Result<()> {
+    pub async fn ensure_indices(&self) -> Result<()> {
         table_ops::ensure_indices(self).await
     }
 
-    pub async fn ensure_indices_on(&mut self, branch: &str) -> Result<()> {
+    pub async fn ensure_indices_on(&self, branch: &str) -> Result<()> {
         table_ops::ensure_indices_on(self, branch).await
     }
 
@@ -674,7 +674,7 @@ impl Omnigraph {
 
     /// Compact small Lance fragments into fewer larger ones across every
     /// node + edge table on `main`. See [`optimize`] for details.
-    pub async fn optimize(&mut self) -> Result<Vec<optimize::TableOptimizeStats>> {
+    pub async fn optimize(&self) -> Result<Vec<optimize::TableOptimizeStats>> {
         optimize::optimize_all_tables(self).await
     }
 
@@ -1003,14 +1003,14 @@ impl Omnigraph {
     }
 
     pub(crate) async fn commit_manifest_updates(
-        &mut self,
+        &self,
         updates: &[crate::db::SubTableUpdate],
     ) -> Result<u64> {
         table_ops::commit_manifest_updates(self, updates).await
     }
 
     pub(crate) async fn record_merge_commit(
-        &mut self,
+        &self,
         manifest_version: u64,
         parent_commit_id: &str,
         merged_parent_commit_id: &str,
@@ -1027,7 +1027,7 @@ impl Omnigraph {
     }
 
     pub(crate) async fn commit_updates_on_branch_with_expected(
-        &mut self,
+        &self,
         branch: Option<&str>,
         updates: &[crate::db::SubTableUpdate],
         expected_table_versions: &std::collections::HashMap<String, u64>,
@@ -1043,7 +1043,7 @@ impl Omnigraph {
         .await
     }
 
-    pub(crate) async fn ensure_commit_graph_initialized(&mut self) -> Result<()> {
+    pub(crate) async fn ensure_commit_graph_initialized(&self) -> Result<()> {
         table_ops::ensure_commit_graph_initialized(self).await
     }
 
