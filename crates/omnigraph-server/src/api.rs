@@ -339,6 +339,12 @@ pub enum ErrorCode {
     BadRequest,
     NotFound,
     Conflict,
+    /// 429 Too Many Requests — per-actor admission cap exceeded.
+    /// Clients should respect the `Retry-After` header.
+    TooManyRequests,
+    /// 503 Service Unavailable — global rewrite pool exhausted
+    /// (compaction, index build). Clients should retry later.
+    ServiceUnavailable,
     Internal,
 }
 

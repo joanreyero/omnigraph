@@ -1140,6 +1140,8 @@
           "bad_request",
           "not_found",
           "conflict",
+          "too_many_requests",
+          "service_unavailable",
           "internal"
         ]
       },

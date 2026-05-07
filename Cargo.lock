@@ -4686,6 +4686,7 @@ dependencies = [
  "cedar-policy",
  "clap",
  "color-eyre",
+ "dashmap",
  "futures",
  "lance-index",
  "omnigraph-compiler",
