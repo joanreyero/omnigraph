@@ -55,7 +55,7 @@ async fn branch_create_failpoint_triggers() {
     let _scenario = FailScenario::setup();
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().to_str().unwrap();
-    let mut db = Omnigraph::init(uri, helpers::TEST_SCHEMA).await.unwrap();
+    let db = Omnigraph::init(uri, helpers::TEST_SCHEMA).await.unwrap();
     let _failpoint = ScopedFailPoint::new("branch_create.after_manifest_branch_create", "return");
 
     let err = db.branch_create("feature").await.unwrap_err();
@@ -100,7 +100,7 @@ async fn schema_apply_pre_commit_crash_rolls_forward_via_sidecar() {
     let uri = dir.path().to_str().unwrap().to_string();
 
     {
-        let mut db = Omnigraph::init(&uri, SCHEMA_V1).await.unwrap();
+        let db = Omnigraph::init(&uri, SCHEMA_V1).await.unwrap();
         let _failpoint = ScopedFailPoint::new("schema_apply.after_staging_write", "return");
         let err = db.apply_schema(SCHEMA_V2_ADDED_TYPE).await.unwrap_err();
         assert!(
@@ -122,7 +122,7 @@ async fn schema_apply_pre_commit_crash_rolls_forward_via_sidecar() {
     // behind is closed.
     let db = Omnigraph::open(&uri).await.unwrap();
     assert_eq!(
-        db.schema_source(),
+        db.schema_source().as_str(),
         SCHEMA_V2_ADDED_TYPE,
         "live schema must reflect the rolled-forward apply (Company added)"
     );
@@ -143,7 +143,7 @@ async fn schema_apply_recovers_post_commit_crash() {
     let uri = dir.path().to_str().unwrap().to_string();
 
     {
-        let mut db = Omnigraph::init(&uri, SCHEMA_V1).await.unwrap();
+        let db = Omnigraph::init(&uri, SCHEMA_V1).await.unwrap();
         let _failpoint = ScopedFailPoint::new("schema_apply.after_manifest_commit", "return");
         let err = db.apply_schema(SCHEMA_V2_ADDED_TYPE).await.unwrap_err();
         assert!(
@@ -157,7 +157,7 @@ async fn schema_apply_recovers_post_commit_crash() {
     // Reopen — manifest is at the new version, so recovery sweep should
     // complete the rename and the live schema matches v2.
     let db = Omnigraph::open(&uri).await.unwrap();
-    assert_eq!(db.schema_source(), SCHEMA_V2_ADDED_TYPE);
+    assert_eq!(db.schema_source().as_str(), SCHEMA_V2_ADDED_TYPE);
     assert_no_staging_files(dir.path());
 }
 
@@ -172,7 +172,7 @@ async fn schema_apply_recovers_partial_rename() {
     let uri = dir.path().to_str().unwrap().to_string();
 
     {
-        let mut db = Omnigraph::init(&uri, SCHEMA_V1).await.unwrap();
+        let db = Omnigraph::init(&uri, SCHEMA_V1).await.unwrap();
         db.apply_schema(SCHEMA_V2_ADDED_TYPE).await.unwrap();
     }
 
@@ -192,7 +192,7 @@ async fn schema_apply_recovers_partial_rename() {
     // Reopen — recovery should complete the rename (overwriting final files
     // with identical staging content) and remove the staging files.
     let db = Omnigraph::open(&uri).await.unwrap();
-    assert_eq!(db.schema_source(), SCHEMA_V2_ADDED_TYPE);
+    assert_eq!(db.schema_source().as_str(), SCHEMA_V2_ADDED_TYPE);
     assert_no_staging_files(dir.path());
 }
 
@@ -324,7 +324,7 @@ async fn recovery_rolls_forward_load_on_feature_branch() {
     let feature_parent_commit_id;
 
     {
-        let mut db = Omnigraph::init(&uri, helpers::TEST_SCHEMA).await.unwrap();
+        let db = Omnigraph::init(&uri, helpers::TEST_SCHEMA).await.unwrap();
         db.branch_create("feature").await.unwrap();
         db.mutate(
             "feature",
@@ -929,7 +929,7 @@ async fn schema_apply_without_schema_staging_rolls_back_on_next_open() {
     };
 
     {
-        let mut db = Omnigraph::open(&uri).await.unwrap();
+        let db = Omnigraph::open(&uri).await.unwrap();
         let _failpoint = ScopedFailPoint::new("schema_apply.before_staging_write", "return");
         let v2_schema = r#"node Person {
     name: String @key
@@ -1029,7 +1029,7 @@ async fn schema_apply_phase_b_failure_recovered_on_next_open() {
     // (Lance HEAD advanced) AND AFTER the schema-state staging files are
     // written, but BEFORE the manifest publish. The recovery sidecar persists.
     {
-        let mut db = Omnigraph::open(&uri).await.unwrap();
+        let db = Omnigraph::open(&uri).await.unwrap();
         let _failpoint = ScopedFailPoint::new("schema_apply.after_staging_write", "return");
         // v2 schema: add a `city` property to Person AND add a new
         // `Tag` node type. The new property triggers the rewritten_tables
@@ -1191,7 +1191,7 @@ async fn branch_merge_phase_b_failure_recovered_on_next_open() {
     // Setup: failpoint fires after the per-table publish loop completes
     // but before commit_manifest_updates. Sidecar persists.
     {
-        let mut db = Omnigraph::open(&uri).await.unwrap();
+        let db = Omnigraph::open(&uri).await.unwrap();
         let _failpoint =
             ScopedFailPoint::new("branch_merge.post_phase_b_pre_manifest_commit", "return");
         let err = db.branch_merge("feature", "main").await.unwrap_err();
@@ -1367,7 +1367,7 @@ async fn branch_merge_phase_b_failure_recovered_on_non_main_target() {
     // but before commit_manifest_updates. Sidecar persists with
     // branch=Some("target_branch").
     {
-        let mut db = Omnigraph::open(&uri).await.unwrap();
+        let db = Omnigraph::open(&uri).await.unwrap();
         let _failpoint =
             ScopedFailPoint::new("branch_merge.post_phase_b_pre_manifest_commit", "return");
         let err = db
@@ -1468,7 +1468,7 @@ async fn branch_merge_sidecar_pins_table_branch_to_active_branch() {
     }
 
     {
-        let mut db = Omnigraph::open(&uri).await.unwrap();
+        let db = Omnigraph::open(&uri).await.unwrap();
         let _failpoint =
             ScopedFailPoint::new("branch_merge.post_phase_b_pre_manifest_commit", "return");
         let _ = db
@@ -1559,7 +1559,7 @@ async fn ensure_indices_phase_b_failure_does_not_leak_sidecar_when_no_work_neede
     // that genuinely need work); no sidecar is written. The failpoint
     // still fires, surfacing the Err.
     {
-        let mut db = Omnigraph::open(&uri).await.unwrap();
+        let db = Omnigraph::open(&uri).await.unwrap();
         let _failpoint =
             ScopedFailPoint::new("ensure_indices.post_phase_b_pre_manifest_commit", "return");
         let err = db.ensure_indices().await.unwrap_err();
