@@ -629,6 +629,7 @@ async fn open_table_for_mutation(
         full_path.clone(),
         table_branch.clone(),
         expected_version,
+        op_kind,
     );
     Ok((ds, full_path, table_branch))
 }

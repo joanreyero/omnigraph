@@ -383,6 +383,7 @@ async fn load_jsonl_reader<R: BufRead>(
                 full_path,
                 table_branch,
                 expected_version,
+                load_op_kind,
             );
             let schema = batch.schema();
             staging.append_batch(&table_key, schema, pending_mode, batch)?;
@@ -504,6 +505,7 @@ async fn load_jsonl_reader<R: BufRead>(
                 full_path,
                 table_branch,
                 expected_version,
+                load_op_kind,
             );
             let schema = batch.schema();
             staging.append_batch(&table_key, schema, pending_mode, batch)?;
