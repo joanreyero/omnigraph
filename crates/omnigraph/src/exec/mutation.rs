@@ -600,6 +600,7 @@ async fn open_table_for_mutation(
     staging: &mut MutationStaging,
     branch: Option<&str>,
     table_key: &str,
+    op_kind: crate::db::MutationOpKind,
 ) -> Result<(Dataset, String, Option<String>)> {
     if let Some(prior) = staging.inline_committed.get(table_key) {
         let path = staging.paths.get(table_key).ok_or_else(|| {
@@ -614,12 +615,14 @@ async fn open_table_for_mutation(
                 &path.full_path,
                 path.table_branch.as_deref(),
                 prior.table_version,
+                op_kind,
             )
             .await?;
         return Ok((ds, path.full_path.clone(), path.table_branch.clone()));
     }
-    let (ds, full_path, table_branch) =
-        db.open_for_mutation_on_branch(branch, table_key).await?;
+    let (ds, full_path, table_branch) = db
+        .open_for_mutation_on_branch(branch, table_key, op_kind)
+        .await?;
     let expected_version = ds.version().version;
     staging.ensure_path(
         table_key,
@@ -911,8 +914,13 @@ impl Omnigraph {
             let has_key = node_type.key_property().is_some();
             let table_key = format!("node:{}", type_name);
             // Capture pre-write metadata on first touch (no Lance write).
+            let insert_kind = if has_key {
+                crate::db::MutationOpKind::Merge
+            } else {
+                crate::db::MutationOpKind::Insert
+            };
             let (_ds, _full_path, _table_branch) =
-                open_table_for_mutation(self, staging, branch, &table_key).await?;
+                open_table_for_mutation(self, staging, branch, &table_key, insert_kind).await?;
             // Accumulate. @key inserts go into the Merge stream (so a
             // later update on the same id coalesces correctly); no-key
             // inserts go into the Append stream.
@@ -946,8 +954,14 @@ impl Omnigraph {
             }
             let table_key = format!("edge:{}", type_name);
             // Capture pre-write metadata on first touch (no Lance write).
-            let (ds, _full_path, _table_branch) =
-                open_table_for_mutation(self, staging, branch, &table_key).await?;
+            let (ds, _full_path, _table_branch) = open_table_for_mutation(
+                self,
+                staging,
+                branch,
+                &table_key,
+                crate::db::MutationOpKind::Insert,
+            )
+            .await?;
             // Accumulate the new edge row. Edge IDs are ULID-generated so
             // Append mode is correct (no key-based dedup needed).
             staging.append_batch(&table_key, schema, PendingMode::Append, batch.clone())?;
@@ -1008,8 +1022,14 @@ impl Omnigraph {
         let blob_props = self.catalog().node_types[type_name].blob_properties.clone();
 
         let table_key = format!("node:{}", type_name);
-        let (ds, _full_path, _table_branch) =
-            open_table_for_mutation(self, staging, branch, &table_key).await?;
+        let (ds, _full_path, _table_branch) = open_table_for_mutation(
+            self,
+            staging,
+            branch,
+            &table_key,
+            crate::db::MutationOpKind::Update,
+        )
+        .await?;
 
         // Scan committed via Lance + apply the same predicate to pending
         // batches via DataFusion `MemTable` (read-your-writes for prior
@@ -1130,8 +1150,14 @@ impl Omnigraph {
         let pred_sql = predicate_to_sql(predicate, params, false)?;
 
         let table_key = format!("node:{}", type_name);
-        let (ds, full_path, table_branch) =
-            open_table_for_mutation(self, staging, branch, &table_key).await?;
+        let (ds, full_path, table_branch) = open_table_for_mutation(
+            self,
+            staging,
+            branch,
+            &table_key,
+            crate::db::MutationOpKind::Delete,
+        )
+        .await?;
         let initial_version = ds.version().version;
 
         // Scan matching IDs for cascade. Per D₂ this never overlaps with
@@ -1176,6 +1202,7 @@ impl Omnigraph {
                 &full_path,
                 table_branch.as_deref(),
                 initial_version,
+                crate::db::MutationOpKind::Delete,
             )
             .await?;
         let delete_state = self
@@ -1219,8 +1246,14 @@ impl Omnigraph {
 
             let edge_table_key = format!("edge:{}", edge_name);
             let cascade_filter = cascade_filters.join(" OR ");
-            let (mut edge_ds, edge_full_path, edge_table_branch) =
-                open_table_for_mutation(self, staging, branch, &edge_table_key).await?;
+            let (mut edge_ds, edge_full_path, edge_table_branch) = open_table_for_mutation(
+                self,
+                staging,
+                branch,
+                &edge_table_key,
+                crate::db::MutationOpKind::Delete,
+            )
+            .await?;
 
             let edge_delete = self
                 .table_store()
@@ -1261,8 +1294,14 @@ impl Omnigraph {
         let pred_sql = predicate_to_sql(predicate, params, true)?;
 
         let table_key = format!("edge:{}", type_name);
-        let (mut ds, full_path, table_branch) =
-            open_table_for_mutation(self, staging, branch, &table_key).await?;
+        let (mut ds, full_path, table_branch) = open_table_for_mutation(
+            self,
+            staging,
+            branch,
+            &table_key,
+            crate::db::MutationOpKind::Delete,
+        )
+        .await?;
 
         let delete_state = self
             .table_store()

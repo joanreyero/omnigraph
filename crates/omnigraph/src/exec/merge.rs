@@ -908,7 +908,13 @@ async fn publish_rewritten_merge_table(
     table_key: &str,
     staged: &StagedMergeResult,
 ) -> Result<crate::db::SubTableUpdate> {
-    let (ds, full_path, table_branch) = target_db.open_for_mutation(table_key).await?;
+    // Branch merge's source-rewrite path is Merge-shaped (upsert from
+    // source onto target). The inline `delete_where` later in this
+    // function operates on rows the rewrite chose to remove, not
+    // user-facing predicates, so Merge is the correct policy here.
+    let (ds, full_path, table_branch) = target_db
+        .open_for_mutation(table_key, crate::db::MutationOpKind::Merge)
+        .await?;
     let mut current_ds = ds;
 
     // Phase 1: merge_insert changed/new rows (preserves _row_created_at_version for

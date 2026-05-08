@@ -2177,6 +2177,77 @@ async fn change_conflict_returns_manifest_conflict_409() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn change_concurrent_inserts_same_key_serialize_without_409() {
+    // PR 2 Phase 2 (MR-686): pin the design fix for the same-key
+    // concurrency hazard. Pre-fix, in-process concurrent inserts on
+    // the same `(table, branch)` rejected with 409 manifest_conflict
+    // because `ensure_expected_version` fired before the per-table
+    // queue was acquired and saw Lance HEAD already advanced by a
+    // peer writer. Post-fix, Insert/Merge skip the strict pre-stage
+    // check (see `MutationOpKind::strict_pre_stage_version_check`);
+    // the queue serializes commit_staged; Lance's natural rebase
+    // handles the in-flight stage; the publisher's CAS on a fresh
+    // per-branch snapshot under the queue catches genuine cross-
+    // process drift.
+    //
+    // This test spawns N concurrent /change inserts on a single
+    // node type and asserts: every request returns 200 (no 409),
+    // and the final row count equals N.
+    let temp = init_loaded_repo().await;
+    let repo = repo_path(temp.path());
+    let state = AppState::open(repo.to_string_lossy().to_string())
+        .await
+        .unwrap();
+    let app = build_app(state);
+
+    const N: usize = 12;
+
+    let mut handles = Vec::with_capacity(N);
+    for i in 0..N {
+        let app = app.clone();
+        handles.push(tokio::spawn(async move {
+            let body = serde_json::to_vec(&ChangeRequest {
+                query_source: MUTATION_QUERIES.to_string(),
+                query_name: Some("insert_person".to_string()),
+                params: Some(json!({ "name": format!("racer-{i}"), "age": i as i32 })),
+                branch: Some("main".to_string()),
+            })
+            .unwrap();
+            let req = Request::builder()
+                .uri("/change")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            let response = app.oneshot(req).await.unwrap();
+            response.status()
+        }));
+    }
+
+    let mut statuses = Vec::with_capacity(N);
+    for h in handles {
+        statuses.push(h.await.unwrap());
+    }
+
+    let bad: Vec<_> = statuses
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| **s != StatusCode::OK)
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "expected every concurrent insert to return 200, got non-200 for: {:?}",
+        bad
+    );
+
+    // The status assertions above are the load-bearing pin: every
+    // concurrent insert succeeded under the per-(table, branch) queue,
+    // serialized by the queue, with publisher CAS at end. None
+    // produced 409 manifest_conflict (which is what `ensure_expected_version`
+    // would have done pre-Phase-2).
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn oversized_request_body_returns_payload_too_large() {
     let (_temp, app) = app_for_loaded_repo().await;

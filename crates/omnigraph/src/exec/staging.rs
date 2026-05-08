@@ -247,15 +247,27 @@ impl MutationStaging {
                 ))
             })?;
 
-            // Reopen at the pre-write version. Lance HEAD has not advanced
-            // since `ensure_path` captured it — no prior op committed to
-            // this dataset.
+            // Reopen the dataset for staging. The op_kind reflects the
+            // accumulated PendingTable's mode: Append-mode batches are
+            // INSERT-shaped (no key-based dedup at commit_staged); Merge-
+            // mode batches are MERGE-shaped (key-dedup at commit_staged).
+            // Both skip the strict pre-stage version check under the
+            // [`MutationOpKind`] policy: Lance's natural rebase + the
+            // per-(table, branch) queue + the publisher CAS in
+            // `commit_all` handle drift; the strict check would
+            // over-reject in-process concurrent inserts (PR 2 / MR-686
+            // Phase 2).
+            let stage_kind = match table.mode {
+                PendingMode::Append => crate::db::MutationOpKind::Insert,
+                PendingMode::Merge => crate::db::MutationOpKind::Merge,
+            };
             let ds = db
                 .reopen_for_mutation(
                     &table_key,
                     &path.full_path,
                     path.table_branch.as_deref(),
                     expected,
+                    stage_kind,
                 )
                 .await?;
 

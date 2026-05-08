@@ -74,14 +74,23 @@ pub struct SchemaApplyResult {
 pub struct Omnigraph {
     root_uri: String,
     storage: Arc<dyn StorageAdapter>,
-    /// Coordinator state behind a tokio Mutex. PR 2 (MR-686) wraps this
-    /// so engine write APIs can be `&self` (the HTTP server's `AppState`
-    /// then holds `Arc<Omnigraph>` and dispatches concurrent calls
-    /// without a global write lock). Critical sections are short:
-    /// callers acquire, read or refresh, drop. Lock acquisition order:
-    /// always before `runtime_cache` (when both are needed in one
-    /// scope).
-    coordinator: Arc<tokio::sync::Mutex<GraphCoordinator>>,
+    /// Coordinator state behind a tokio `RwLock`. PR 2 (MR-686) wraps
+    /// this so engine write APIs can be `&self` (the HTTP server's
+    /// `AppState` holds `Arc<Omnigraph>` and dispatches concurrent
+    /// calls without a global write lock). Reads (`snapshot`, `version`,
+    /// `current_branch`, `branch_list`, `resolve_*`, `head_commit_id`,
+    /// `list_commits`, …) acquire `.read().await` and parallelize.
+    /// Writes (`refresh`, `branch_create`, `branch_delete`, `commit_*`,
+    /// `record_*`) acquire `.write().await` and serialize. The atomic
+    /// commit invariant — `commit_manifest_updates` followed by
+    /// `record_graph_commit` must be atomic — is preserved by the
+    /// single `.write()` covering both calls inside
+    /// `commit_updates_with_actor_with_expected`. PR 2 Phase 2
+    /// converted from `Mutex` to `RwLock` because the bench showed
+    /// the Mutex was the dominant serializer for disjoint-table
+    /// workloads. Lock acquisition order: always before `runtime_cache`
+    /// (when both are needed in one scope).
+    coordinator: Arc<tokio::sync::RwLock<GraphCoordinator>>,
     table_store: TableStore,
     runtime_cache: RuntimeCache,
     /// Read-heavy on every query, written only by `apply_schema`. ArcSwap
@@ -146,7 +155,7 @@ impl Omnigraph {
         Ok(Self {
             root_uri: root.clone(),
             storage,
-            coordinator: Arc::new(tokio::sync::Mutex::new(coordinator)),
+            coordinator: Arc::new(tokio::sync::RwLock::new(coordinator)),
             table_store: TableStore::new(&root),
             runtime_cache: RuntimeCache::default(),
             catalog: Arc::new(ArcSwap::from_pointee(catalog)),
@@ -232,7 +241,7 @@ impl Omnigraph {
         Ok(Self {
             root_uri: root.clone(),
             storage,
-            coordinator: Arc::new(tokio::sync::Mutex::new(coordinator)),
+            coordinator: Arc::new(tokio::sync::RwLock::new(coordinator)),
             table_store: TableStore::new(&root),
             runtime_cache: RuntimeCache::default(),
             catalog: Arc::new(ArcSwap::from_pointee(catalog)),
@@ -347,12 +356,12 @@ impl Omnigraph {
         branch: Option<&str>,
     ) -> Result<GraphCoordinator> {
         let next = self.open_coordinator_for_branch(branch).await?;
-        let mut coord = self.coordinator.lock().await;
+        let mut coord = self.coordinator.write().await;
         Ok(std::mem::replace(&mut *coord, next))
     }
 
     pub(crate) async fn restore_coordinator(&self, coordinator: GraphCoordinator) {
-        *self.coordinator.lock().await = coordinator;
+        *self.coordinator.write().await = coordinator;
     }
 
     pub(crate) async fn resolved_branch_target(
@@ -362,7 +371,7 @@ impl Omnigraph {
         self.ensure_schema_state_valid().await?;
         let requested = ReadTarget::Branch(branch.unwrap_or("main").to_string());
         let normalized = normalize_branch_name(branch.unwrap_or("main"))?;
-        let coord = self.coordinator.lock().await;
+        let coord = self.coordinator.read().await;
         if normalized.as_deref() == coord.current_branch() {
             let snapshot_id = coord.head_commit_id().await?.unwrap_or_else(|| {
                 SnapshotId::synthetic(coord.current_branch(), coord.version())
@@ -384,12 +393,12 @@ impl Omnigraph {
     }
 
     pub(crate) async fn version(&self) -> u64 {
-        self.coordinator.lock().await.version()
+        self.coordinator.read().await.version()
     }
 
     /// Return an immutable Snapshot from the known manifest state. No storage I/O.
     pub(crate) async fn snapshot(&self) -> Snapshot {
-        self.coordinator.lock().await.snapshot()
+        self.coordinator.read().await.snapshot()
     }
 
     pub async fn snapshot_of(&self, target: impl Into<ReadTarget>) -> Result<Snapshot> {
@@ -418,7 +427,7 @@ impl Omnigraph {
         self.ensure_schema_state_valid().await?;
         let branch = normalize_branch_name(branch)?;
         let next = self.open_coordinator_for_branch(branch.as_deref()).await?;
-        *self.coordinator.lock().await = next;
+        *self.coordinator.write().await = next;
         self.runtime_cache.invalidate_all().await;
         Ok(())
     }
@@ -456,7 +465,7 @@ impl Omnigraph {
     /// [`refresh_coordinator_only`](Self::refresh_coordinator_only) to
     /// avoid the recovery sweep racing their own sidecar.
     pub async fn refresh(&self) -> Result<()> {
-        let mut coord = self.coordinator.lock().await;
+        let mut coord = self.coordinator.write().await;
         coord.refresh().await?;
         let schema_state_recovery = recover_schema_state_files(
             &self.root_uri,
@@ -484,7 +493,7 @@ impl Omnigraph {
             return Ok(());
         }
         let current_source_ir = read_schema_ir_from_source(&schema_source)?;
-        let branches = self.coordinator.lock().await.branch_list().await?;
+        let branches = self.coordinator.read().await.branch_list().await?;
         let (accepted_ir, _) = load_or_bootstrap_schema_contract(
             &self.root_uri,
             Arc::clone(&self.storage),
@@ -507,14 +516,14 @@ impl Omnigraph {
     /// RolledPastExpected, and roll it forward — racing the caller's
     /// own publish path.
     pub(crate) async fn refresh_coordinator_only(&self) -> Result<()> {
-        self.coordinator.lock().await.refresh().await?;
+        self.coordinator.write().await.refresh().await?;
         self.runtime_cache.invalidate_all().await;
         Ok(())
     }
 
     pub async fn resolve_snapshot(&self, branch: &str) -> Result<SnapshotId> {
         self.ensure_schema_state_valid().await?;
-        self.coordinator.lock().await.resolve_snapshot_id(branch).await
+        self.coordinator.read().await.resolve_snapshot_id(branch).await
     }
 
     pub(crate) async fn resolved_target(
@@ -522,7 +531,7 @@ impl Omnigraph {
         target: impl Into<ReadTarget>,
     ) -> Result<ResolvedTarget> {
         self.ensure_schema_state_valid().await?;
-        self.coordinator.lock().await.resolve_target(&target.into()).await
+        self.coordinator.read().await.resolve_target(&target.into()).await
     }
 
     // ─── Change detection ────────────────────────────────────────────────
@@ -553,7 +562,7 @@ impl Omnigraph {
         to_commit_id: &str,
         filter: &crate::changes::ChangeFilter,
     ) -> Result<crate::changes::ChangeSet> {
-        let coord = self.coordinator.lock().await;
+        let coord = self.coordinator.read().await;
         let from_commit = coord.resolve_commit(&SnapshotId::new(from_commit_id)).await?;
         let to_commit = coord.resolve_commit(&SnapshotId::new(to_commit_id)).await?;
         let from_snap = coord
@@ -599,7 +608,7 @@ impl Omnigraph {
     /// Create a Snapshot at any historical manifest version.
     pub async fn snapshot_at_version(&self, version: u64) -> Result<Snapshot> {
         self.ensure_schema_state_valid().await?;
-        self.coordinator.lock().await.snapshot_at_version(version).await
+        self.coordinator.read().await.snapshot_at_version(version).await
     }
 
     pub async fn export_jsonl(
@@ -740,11 +749,11 @@ impl Omnigraph {
     }
 
     pub(crate) async fn active_branch(&self) -> Option<String> {
-        self.coordinator.lock().await.current_branch().map(str::to_string)
+        self.coordinator.read().await.current_branch().map(str::to_string)
     }
 
     async fn ensure_branch_delete_safe(&self, branch: &str, branches: &[String]) -> Result<()> {
-        let descendants = self.coordinator.lock().await.branch_descendants(branch).await?;
+        let descendants = self.coordinator.read().await.branch_descendants(branch).await?;
         if let Some(descendant) = descendants.first() {
             return Err(OmniError::manifest_conflict(format!(
                 "cannot delete branch '{}' because descendant branch '{}' still depends on it",
@@ -800,7 +809,7 @@ impl Omnigraph {
     }
 
     async fn delete_branch_storage_only(&self, branch: &str) -> Result<()> {
-        let active = self.coordinator.lock().await.current_branch().map(str::to_string);
+        let active = self.coordinator.read().await.current_branch().map(str::to_string);
         if active.as_deref() == Some(branch) {
             return Err(OmniError::manifest_conflict(format!(
                 "cannot delete currently active branch '{}'",
@@ -815,7 +824,7 @@ impl Omnigraph {
             .map(|entry| (entry.table_key.clone(), entry.table_path.clone()))
             .collect::<Vec<_>>();
 
-        self.coordinator.lock().await.branch_delete(branch).await?;
+        self.coordinator.write().await.branch_delete(branch).await?;
         self.cleanup_deleted_branch_tables(branch, &owned_tables)
             .await
     }
@@ -840,7 +849,7 @@ impl Omnigraph {
         self.ensure_schema_state_valid().await?;
         self.ensure_schema_apply_idle("branch_create").await?;
         ensure_public_branch_ref(name, "branch_create")?;
-        self.coordinator.lock().await.branch_create(name).await
+        self.coordinator.write().await.branch_create(name).await
     }
 
     pub async fn branch_create_from(
@@ -870,14 +879,14 @@ impl Omnigraph {
         }
         let branch = normalize_branch_name(&branch_name)?;
         let previous = self.swap_coordinator_for_branch(branch.as_deref()).await?;
-        let result = self.coordinator.lock().await.branch_create(name).await;
+        let result = self.coordinator.write().await.branch_create(name).await;
         self.restore_coordinator(previous).await;
         result
     }
 
     pub async fn branch_list(&self) -> Result<Vec<String>> {
         self.ensure_schema_state_valid().await?;
-        self.coordinator.lock().await.branch_list().await
+        self.coordinator.read().await.branch_list().await
     }
 
     pub async fn branch_delete(&self, name: &str) -> Result<()> {
@@ -887,7 +896,7 @@ impl Omnigraph {
         self.refresh().await?;
         let branch = normalize_branch_name(name)?
             .ok_or_else(|| OmniError::manifest("cannot delete branch 'main'".to_string()))?;
-        let branches = self.coordinator.lock().await.branch_list().await?;
+        let branches = self.coordinator.read().await.branch_list().await?;
         if !branches.iter().any(|candidate| candidate == &branch) {
             return Err(OmniError::manifest_not_found(format!(
                 "branch '{}' not found",
@@ -901,7 +910,7 @@ impl Omnigraph {
 
     pub async fn get_commit(&self, commit_id: &str) -> Result<GraphCommit> {
         self.ensure_schema_state_valid().await?;
-        self.coordinator.lock().await
+        self.coordinator.read().await
             .resolve_commit(&SnapshotId::new(commit_id))
             .await
     }
@@ -924,16 +933,18 @@ impl Omnigraph {
     pub(crate) async fn open_for_mutation(
         &self,
         table_key: &str,
+        op_kind: crate::db::MutationOpKind,
     ) -> Result<(Dataset, String, Option<String>)> {
-        table_ops::open_for_mutation(self, table_key).await
+        table_ops::open_for_mutation(self, table_key, op_kind).await
     }
 
     pub(crate) async fn open_for_mutation_on_branch(
         &self,
         branch: Option<&str>,
         table_key: &str,
+        op_kind: crate::db::MutationOpKind,
     ) -> Result<(Dataset, String, Option<String>)> {
-        table_ops::open_for_mutation_on_branch(self, branch, table_key).await
+        table_ops::open_for_mutation_on_branch(self, branch, table_key, op_kind).await
     }
 
     pub(crate) async fn fork_dataset_from_entry_state(
@@ -961,9 +972,17 @@ impl Omnigraph {
         full_path: &str,
         table_branch: Option<&str>,
         expected_version: u64,
+        op_kind: crate::db::MutationOpKind,
     ) -> Result<Dataset> {
-        table_ops::reopen_for_mutation(self, table_key, full_path, table_branch, expected_version)
-            .await
+        table_ops::reopen_for_mutation(
+            self,
+            table_key,
+            full_path,
+            table_branch,
+            expected_version,
+            op_kind,
+        )
+        .await
     }
 
     pub(crate) async fn open_dataset_at_state(
@@ -1551,7 +1570,10 @@ edge WorksAt: Person -> Company
     }
 
     async fn seed_person_row(db: &mut Omnigraph, name: &str, age: Option<i32>) {
-        let (mut ds, full_path, table_branch) = db.open_for_mutation("node:Person").await.unwrap();
+        let (mut ds, full_path, table_branch) = db
+            .open_for_mutation("node:Person", crate::db::MutationOpKind::Insert)
+            .await
+            .unwrap();
         let schema: Arc<Schema> = Arc::new(ds.schema().into());
         let columns: Vec<Arc<dyn Array>> = schema
             .fields()
@@ -1675,7 +1697,7 @@ edge WorksAt: Person -> Company
         .await
         .unwrap();
 
-        let all_branches = db.coordinator.lock().await.all_branches().await.unwrap();
+        let all_branches = db.coordinator.read().await.all_branches().await.unwrap();
         assert!(
             !all_branches.iter().any(|b| is_internal_run_branch(b)),
             "run branch should be deleted after publish, got: {:?}",
@@ -1731,13 +1753,16 @@ edge WorksAt: Person -> Company
         let db = Omnigraph::init(uri, TEST_SCHEMA).await.unwrap();
         let mut db = db;
         db.coordinator
-            .lock()
+            .write()
             .await
             .branch_create(SCHEMA_APPLY_LOCK_BRANCH)
             .await
             .unwrap();
 
-        let err = db.open_for_mutation("node:Person").await.unwrap_err();
+        let err = db
+            .open_for_mutation("node:Person", crate::db::MutationOpKind::Insert)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string()
                 .contains("write is unavailable while schema apply is in progress")
@@ -1750,7 +1775,7 @@ edge WorksAt: Person -> Company
         let uri = dir.path().to_str().unwrap();
         let mut db = Omnigraph::init(uri, TEST_SCHEMA).await.unwrap();
         db.coordinator
-            .lock()
+            .write()
             .await
             .branch_create(SCHEMA_APPLY_LOCK_BRANCH)
             .await
@@ -1769,7 +1794,7 @@ edge WorksAt: Person -> Company
         let uri = dir.path().to_str().unwrap();
         let mut db = Omnigraph::init(uri, TEST_SCHEMA).await.unwrap();
         db.coordinator
-            .lock()
+            .write()
             .await
             .branch_create(SCHEMA_APPLY_LOCK_BRANCH)
             .await

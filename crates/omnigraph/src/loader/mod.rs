@@ -335,6 +335,16 @@ async fn load_jsonl_reader<R: BufRead>(
         LoadMode::Append => PendingMode::Append,
         LoadMode::Overwrite => PendingMode::Append, // unused
     };
+    // Map LoadMode to MutationOpKind for the version-check policy.
+    // Append/Merge skip the strict pre-stage check (concurrency-safe
+    // under the per-(table, branch) queue + publisher CAS); Overwrite
+    // uses the strict check because it truncates and replaces the
+    // dataset — concurrent advances change what "replace" means.
+    let load_op_kind = match mode {
+        LoadMode::Append => crate::db::MutationOpKind::Insert,
+        LoadMode::Merge => crate::db::MutationOpKind::Merge,
+        LoadMode::Overwrite => crate::db::MutationOpKind::SchemaRewrite,
+    };
 
     // Phase 2a: build and validate every node batch up front. Cheap and
     // synchronous — surfaces validation errors before any S3 traffic.
@@ -365,7 +375,7 @@ async fn load_jsonl_reader<R: BufRead>(
     if use_staging {
         for (type_name, table_key, batch, loaded_count) in prepared_nodes {
             let (ds, full_path, table_branch) = db
-                .open_for_mutation_on_branch(branch, &table_key)
+                .open_for_mutation_on_branch(branch, &table_key, load_op_kind)
                 .await?;
             let expected_version = ds.version().version;
             staging.ensure_path(
@@ -486,7 +496,7 @@ async fn load_jsonl_reader<R: BufRead>(
     if use_staging {
         for (edge_name, table_key, batch, loaded_count) in prepared_edges {
             let (ds, full_path, table_branch) = db
-                .open_for_mutation_on_branch(branch, &table_key)
+                .open_for_mutation_on_branch(branch, &table_key, load_op_kind)
                 .await?;
             let expected_version = ds.version().version;
             staging.ensure_path(
@@ -1164,8 +1174,14 @@ async fn write_batch_to_dataset(
     batch: RecordBatch,
     mode: LoadMode,
 ) -> Result<(crate::table_store::TableState, Option<String>)> {
-    let (mut ds, full_path, table_branch) =
-        db.open_for_mutation_on_branch(branch, table_key).await?;
+    let op_kind = match mode {
+        LoadMode::Append => crate::db::MutationOpKind::Insert,
+        LoadMode::Merge => crate::db::MutationOpKind::Merge,
+        LoadMode::Overwrite => crate::db::MutationOpKind::SchemaRewrite,
+    };
+    let (mut ds, full_path, table_branch) = db
+        .open_for_mutation_on_branch(branch, table_key, op_kind)
+        .await?;
     let table_store = db.table_store();
 
     match mode {

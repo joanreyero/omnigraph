@@ -31,7 +31,7 @@ pub(super) async fn apply_schema_with_lock(
     desired_schema_source: &str,
 ) -> Result<SchemaApplyResult> {
     db.ensure_schema_state_valid().await?;
-    let branches = db.coordinator.lock().await.all_branches().await?;
+    let branches = db.coordinator.read().await.all_branches().await?;
     // Skip `main` and internal system branches. The schema-apply lock branch
     // is excluded because it is the cluster-wide schema-apply serializer.
     // `__run__*` branches are no longer created; the filter remains as
@@ -475,7 +475,7 @@ pub(super) async fn apply_schema_with_lock(
         _snapshot_id: _,
     } = db
         .coordinator
-        .lock()
+        .write()
         .await
         .commit_changes_with_actor(&manifest_changes, None)
         .await?;
@@ -500,7 +500,7 @@ pub(super) async fn apply_schema_with_lock(
 
     db.store_catalog(desired_catalog);
     db.store_schema_source(desired_schema_source.to_string());
-    db.coordinator.lock().await.refresh().await?;
+    db.coordinator.write().await.refresh().await?;
     db.runtime_cache.invalidate_all().await;
     if changed_edge_tables {
         db.invalidate_graph_index().await;
@@ -539,7 +539,7 @@ pub(super) async fn ensure_schema_apply_idle(db: &Omnigraph, operation: &str) ->
 pub(super) async fn acquire_schema_apply_lock(db: &Omnigraph) -> Result<()> {
     db.ensure_schema_state_valid().await?;
     db.refresh_coordinator_only().await?;
-    let branches = db.coordinator.lock().await.all_branches().await?;
+    let branches = db.coordinator.read().await.all_branches().await?;
     if branches
         .iter()
         .any(|branch| is_schema_apply_lock_branch(branch))
@@ -550,7 +550,7 @@ pub(super) async fn acquire_schema_apply_lock(db: &Omnigraph) -> Result<()> {
     }
 
     db.coordinator
-        .lock()
+        .write()
         .await
         .branch_create(SCHEMA_APPLY_LOCK_BRANCH)
         .await?;
@@ -558,7 +558,7 @@ pub(super) async fn acquire_schema_apply_lock(db: &Omnigraph) -> Result<()> {
 
     let blocking_branches = db
         .coordinator
-        .lock()
+        .read()
         .await
         .all_branches()
         .await?
@@ -578,7 +578,7 @@ pub(super) async fn acquire_schema_apply_lock(db: &Omnigraph) -> Result<()> {
 
 pub(super) async fn release_schema_apply_lock(db: &Omnigraph) -> Result<()> {
     db.coordinator
-        .lock()
+        .write()
         .await
         .branch_delete(SCHEMA_APPLY_LOCK_BRANCH)
         .await?;
@@ -593,7 +593,7 @@ pub(super) async fn release_schema_apply_lock(db: &Omnigraph) -> Result<()> {
 pub(super) async fn ensure_schema_apply_not_locked(db: &Omnigraph, operation: &str) -> Result<()> {
     if db
         .coordinator
-        .lock()
+        .read()
         .await
         .all_branches()
         .await?
