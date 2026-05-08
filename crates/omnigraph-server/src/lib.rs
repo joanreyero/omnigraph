@@ -928,7 +928,6 @@ async fn server_export(
         (status = 403, description = "Forbidden", body = ErrorOutput),
         (status = 409, description = "Merge conflict", body = ErrorOutput),
         (status = 429, description = "Per-actor admission cap exceeded; honor `Retry-After` header", body = ErrorOutput),
-        (status = 503, description = "Global rewrite pool exhausted; honor `Retry-After` header", body = ErrorOutput),
     ),
     security(("bearer_token" = [])),
 )]
@@ -1055,7 +1054,6 @@ async fn server_schema_get(
         (status = 401, description = "Unauthorized", body = ErrorOutput),
         (status = 403, description = "Forbidden", body = ErrorOutput),
         (status = 429, description = "Per-actor admission cap exceeded; honor `Retry-After` header", body = ErrorOutput),
-        (status = 503, description = "Global rewrite pool exhausted; honor `Retry-After` header", body = ErrorOutput),
     ),
     security(("bearer_token" = [])),
 )]
@@ -1111,7 +1109,6 @@ async fn server_schema_apply(
         (status = 401, description = "Unauthorized", body = ErrorOutput),
         (status = 403, description = "Forbidden", body = ErrorOutput),
         (status = 429, description = "Per-actor admission cap exceeded; honor `Retry-After` header", body = ErrorOutput),
-        (status = 503, description = "Global rewrite pool exhausted; honor `Retry-After` header", body = ErrorOutput),
     ),
     security(("bearer_token" = [])),
 )]
@@ -1240,7 +1237,6 @@ async fn server_branch_list(
         (status = 403, description = "Forbidden", body = ErrorOutput),
         (status = 409, description = "Branch already exists", body = ErrorOutput),
         (status = 429, description = "Per-actor admission cap exceeded; honor `Retry-After` header", body = ErrorOutput),
-        (status = 503, description = "Global rewrite pool exhausted; honor `Retry-After` header", body = ErrorOutput),
     ),
     security(("bearer_token" = [])),
 )]
@@ -1307,7 +1303,6 @@ async fn server_branch_create(
         (status = 403, description = "Forbidden", body = ErrorOutput),
         (status = 404, description = "Branch not found", body = ErrorOutput),
         (status = 429, description = "Per-actor admission cap exceeded; honor `Retry-After` header", body = ErrorOutput),
-        (status = 503, description = "Global rewrite pool exhausted; honor `Retry-After` header", body = ErrorOutput),
     ),
     security(("bearer_token" = [])),
 )]
@@ -1367,7 +1362,6 @@ async fn server_branch_delete(
         (status = 403, description = "Forbidden", body = ErrorOutput),
         (status = 409, description = "Merge conflict", body = ErrorOutput),
         (status = 429, description = "Per-actor admission cap exceeded; honor `Retry-After` header", body = ErrorOutput),
-        (status = 503, description = "Global rewrite pool exhausted; honor `Retry-After` header", body = ErrorOutput),
     ),
     security(("bearer_token" = [])),
 )]

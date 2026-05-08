@@ -133,16 +133,6 @@
                 }
               }
             }
-          },
-          "503": {
-            "description": "Global rewrite pool exhausted; honor `Retry-After` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorOutput"
-                }
-              }
-            }
           }
         },
         "security": [
@@ -230,16 +220,6 @@
                 }
               }
             }
-          },
-          "503": {
-            "description": "Global rewrite pool exhausted; honor `Retry-After` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorOutput"
-                }
-              }
-            }
           }
         },
         "security": [
@@ -311,16 +291,6 @@
           },
           "429": {
             "description": "Per-actor admission cap exceeded; honor `Retry-After` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorOutput"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Global rewrite pool exhausted; honor `Retry-After` header",
             "content": {
               "application/json": {
                 "schema": {
@@ -408,16 +378,6 @@
           },
           "429": {
             "description": "Per-actor admission cap exceeded; honor `Retry-After` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorOutput"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Global rewrite pool exhausted; honor `Retry-After` header",
             "content": {
               "application/json": {
                 "schema": {
@@ -715,16 +675,6 @@
                 }
               }
             }
-          },
-          "503": {
-            "description": "Global rewrite pool exhausted; honor `Retry-After` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorOutput"
-                }
-              }
-            }
           }
         },
         "security": [
@@ -909,16 +859,6 @@
           },
           "429": {
             "description": "Per-actor admission cap exceeded; honor `Retry-After` header",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorOutput"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Global rewrite pool exhausted; honor `Retry-After` header",
             "content": {
               "application/json": {
                 "schema": {
