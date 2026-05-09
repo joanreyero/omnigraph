@@ -3149,10 +3149,25 @@ async fn concurrent_branch_ops_morphological_matrix() {
                 matrix::op_change_insert("main".to_string(), "Steve-cellk".to_string(), 37),
             )
             .await;
-        assert_eq!(sa.status, StatusCode::OK, "[{}] merge", cell);
         assert_eq!(sb.status, StatusCode::OK, "[{}] change", cell);
-        h.assert_persons("main", cell, &["Rita-cellk", "Steve-cellk"], &[])
-            .await;
+        assert!(
+            sa.status == StatusCode::OK || sa.status == StatusCode::CONFLICT,
+            "[{}] merge must be 200 or clean 409, got {}",
+            cell,
+            sa.status
+        );
+        if sa.status == StatusCode::OK {
+            h.assert_persons("main", cell, &["Rita-cellk", "Steve-cellk"], &[])
+                .await;
+        } else {
+            let error: ErrorOutput = serde_json::from_slice(&sa.body).unwrap();
+            let conflict = error
+                .manifest_conflict
+                .expect("merge 409 must include manifest_conflict");
+            assert_eq!(conflict.table_key, "node:Person", "[{}] conflict table", cell);
+            h.assert_persons("main", cell, &["Steve-cellk"], &["Rita-cellk"])
+                .await;
+        }
 
         // Reopen via a fresh AppState on the same repo.
         let repo_uri = format!("{}/server.omni", h._temp.path().display());
@@ -3172,6 +3187,23 @@ async fn concurrent_branch_ops_morphological_matrix() {
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK, "[{}] reopen snapshot", cell);
+        let body = to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let person_rows = v["tables"]
+            .as_array()
+            .and_then(|tables| {
+                tables
+                    .iter()
+                    .find(|t| t["table_key"].as_str() == Some("node:Person"))
+            })
+            .and_then(|t| t["row_count"].as_u64())
+            .expect("reopen snapshot must include node:Person row_count");
+        let expected_rows = if sa.status == StatusCode::OK { 6 } else { 5 };
+        assert_eq!(
+            person_rows, expected_rows,
+            "[{}] reopened main should include seed (4) + committed concurrent writes",
+            cell,
+        );
     }
 }
 
