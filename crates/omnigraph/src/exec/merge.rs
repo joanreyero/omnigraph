@@ -1233,6 +1233,30 @@ impl Omnigraph {
             .collect();
         let _merge_queue_guards = self.write_queue().acquire_many(&merge_queue_keys).await;
 
+        let post_queue_snapshot = self.snapshot().await;
+        for table_key in &ordered_table_keys {
+            let Some(candidate) = candidates.get(table_key) else {
+                continue;
+            };
+            if !matches!(
+                candidate,
+                CandidateTableState::RewriteMerged(_) | CandidateTableState::AdoptSourceState
+            ) {
+                continue;
+            }
+            let expected = target_snapshot.entry(table_key).map(|e| e.table_version);
+            let current = post_queue_snapshot
+                .entry(table_key)
+                .map(|e| e.table_version);
+            if expected != current {
+                return Err(OmniError::manifest_expected_version_mismatch(
+                    table_key.clone(),
+                    expected.unwrap_or(0),
+                    current.unwrap_or(0),
+                ));
+            }
+        }
+
         let recovery_pins: Vec<crate::db::manifest::SidecarTablePin> = ordered_table_keys
             .iter()
             .filter_map(|table_key| {
