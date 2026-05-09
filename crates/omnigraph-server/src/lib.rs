@@ -377,18 +377,6 @@ impl ApiError {
         }
     }
 
-    /// HTTP 503 Service Unavailable — global rewrite pool exhausted.
-    /// Mapped from `RejectReason::GlobalRewriteExhausted`.
-    pub fn service_unavailable(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            code: ErrorCode::ServiceUnavailable,
-            message: message.into(),
-            merge_conflicts: Vec::new(),
-            manifest_conflict: None,
-        }
-    }
-
     /// Convert a `WorkloadController` rejection into the matching
     /// `ApiError` variant.
     pub fn from_workload_reject(reject: workload::RejectReason) -> Self {
@@ -396,9 +384,6 @@ impl ApiError {
             workload::RejectReason::InFlightCountExceeded { .. }
             | workload::RejectReason::ByteBudgetExceeded { .. } => {
                 Self::too_many_requests(reject.to_string())
-            }
-            workload::RejectReason::GlobalRewriteExhausted { .. } => {
-                Self::service_unavailable(reject.to_string())
             }
         }
     }
@@ -490,21 +475,13 @@ fn summarize_merge_conflicts(conflicts: &[api::MergeConflictOutput]) -> String {
     format!("merge conflicts: {}{}", preview.join("; "), suffix)
 }
 
-/// Constant `Retry-After` value (seconds) emitted on 429 / 503 responses.
-/// Matches the doc claim at `ApiError::too_many_requests` and
-/// `ApiError::service_unavailable`. Plumbing per-RejectReason durations
-/// through is a follow-up; the admission rejects we surface today are
-/// uniformly bounded by the in-flight cap recovery time, which is
-/// dominated by request handler duration rather than calendar wait.
+/// Constant `Retry-After` value (seconds) emitted on 429 responses.
 const RETRY_AFTER_SECONDS: &str = "60";
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut headers = axum::http::HeaderMap::new();
-        if matches!(
-            self.code,
-            ErrorCode::TooManyRequests | ErrorCode::ServiceUnavailable
-        ) {
+        if matches!(self.code, ErrorCode::TooManyRequests) {
             headers.insert(
                 axum::http::header::RETRY_AFTER,
                 axum::http::HeaderValue::from_static(RETRY_AFTER_SECONDS),

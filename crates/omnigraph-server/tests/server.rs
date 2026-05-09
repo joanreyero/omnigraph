@@ -3360,7 +3360,6 @@ async fn ingest_per_actor_admission_cap_returns_429() {
     let workload = omnigraph_server::workload::WorkloadController::new(
         1,             // per-actor in-flight cap (the fixture under test)
         1_000_000_000, // per-actor byte budget — large so it never bottlenecks
-        4,             // global rewrite cap (default-equivalent)
     );
     let state = AppState::new_with_workload(
         repo.to_string_lossy().to_string(),

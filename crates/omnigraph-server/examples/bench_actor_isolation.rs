@@ -76,10 +76,6 @@ struct Args {
     /// doesn't bottleneck the count gate during normal bench runs.
     #[arg(long, default_value_t = 1_073_741_824)]
     byte_cap: u64,
-    /// Global rewrite-pool cap. Bench is non-rewriting so default 4
-    /// matches production.
-    #[arg(long, default_value_t = 4)]
-    global_rewrite_cap: u32,
     /// Output file for the JSON results. Stdout always gets a copy.
     #[arg(long)]
     output: Option<PathBuf>,
@@ -282,7 +278,7 @@ async fn main() {
     // `unsafe { std::env::set_var(...) }` antipattern that violates
     // `setenv`'s thread-safety precondition once the multi-thread tokio
     // runtime is up.
-    let workload = WorkloadController::new(args.inflight_cap, args.byte_cap, args.global_rewrite_cap);
+    let workload = WorkloadController::new(args.inflight_cap, args.byte_cap);
     let state = AppState::new_with_workload(
         repo.to_string_lossy().to_string(),
         db,
