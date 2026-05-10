@@ -1206,6 +1206,7 @@ impl Omnigraph {
                 crate::db::MutationOpKind::Delete,
             )
             .await?;
+        crate::failpoints::maybe_fail("mutation.delete_node_pre_primary_delete")?;
         let delete_state = self
             .table_store()
             .delete_where(&full_path, &mut ds, &pred_sql)

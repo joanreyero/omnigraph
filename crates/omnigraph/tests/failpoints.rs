@@ -3,6 +3,7 @@
 mod helpers;
 
 use fail::FailScenario;
+use futures::FutureExt;
 use omnigraph::db::Omnigraph;
 use omnigraph::failpoints::ScopedFailPoint;
 
@@ -25,31 +26,6 @@ fn node_table_uri(root: &str, type_name: &str) -> String {
     format!("{}/nodes/{hash:016x}", root.trim_end_matches('/'))
 }
 
-fn person_batch(rows: &[(&str, &str, Option<i32>)]) -> arrow_array::RecordBatch {
-    use std::sync::Arc;
-
-    use arrow_array::{Int32Array, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("age", DataType::Int32, true),
-        Field::new("name", DataType::Utf8, false),
-    ]));
-    let ids: Vec<&str> = rows.iter().map(|(id, _, _)| *id).collect();
-    let names: Vec<&str> = rows.iter().map(|(_, name, _)| *name).collect();
-    let ages: Vec<Option<i32>> = rows.iter().map(|(_, _, age)| *age).collect();
-    arrow_array::RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(StringArray::from(ids)),
-            Arc::new(Int32Array::from(ages)),
-            Arc::new(StringArray::from(names)),
-        ],
-    )
-    .unwrap()
-}
-
 #[tokio::test]
 async fn branch_create_failpoint_triggers() {
     let _scenario = FailScenario::setup();
@@ -65,7 +41,7 @@ async fn branch_create_failpoint_triggers() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graph_publish_failpoint_triggers_before_commit_append() {
     let _scenario = FailScenario::setup();
     let dir = tempfile::tempdir().unwrap();
@@ -309,6 +285,85 @@ async fn recovery_rolls_forward_after_finalize_publisher_failure() {
     assert_eq!(
         person_count, 2,
         "Frank's insert must land normally after recovery"
+    );
+}
+
+#[tokio::test]
+async fn inline_delete_conflict_writes_sidecar_before_rejecting() {
+    let _scenario = FailScenario::setup();
+    let dir = tempfile::tempdir().unwrap();
+    let uri = dir.path().to_str().unwrap().to_string();
+    let db = helpers::init_and_load(&dir).await;
+
+    let pre_snapshot = db
+        .snapshot_of(omnigraph::db::ReadTarget::branch("main"))
+        .await
+        .unwrap();
+    let pre_person_pin = pre_snapshot.entry("node:Person").unwrap().table_version;
+    let person_uri = node_table_uri(&uri, "Person");
+
+    {
+        let _pause_delete = ScopedFailPoint::new("mutation.delete_node_pre_primary_delete", "pause");
+        let delete_params = helpers::params(&[("$name", "Alice")]);
+        let delete = db.mutate(
+            "main",
+            MUTATION_QUERIES,
+            "remove_person",
+            &delete_params,
+        );
+        tokio::pin!(delete);
+
+        let mut concurrent_update_succeeded = false;
+        for _ in 0..50 {
+            if delete.as_mut().now_or_never().is_some() {
+                panic!("delete mutation completed before primary-delete failpoint was released");
+            }
+            let mut concurrent = Omnigraph::open_read_only(&uri).await.unwrap();
+            if mutate_main(
+                &mut concurrent,
+                MUTATION_QUERIES,
+                "set_age",
+                &mixed_params(&[("$name", "Bob")], &[("$age", 26)]),
+            )
+                .await
+                .is_ok()
+            {
+                concurrent_update_succeeded = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(concurrent_update_succeeded, "concurrent update must land while delete is paused");
+        fail::remove("mutation.delete_node_pre_primary_delete");
+
+        let err = delete.await.unwrap_err();
+        assert!(
+            err.to_string().contains("stale view of 'node:Person'")
+                || err.to_string().contains("ExpectedVersionMismatch")
+                || err.to_string().contains("expected version mismatch"),
+            "unexpected error: {err}",
+        );
+    }
+
+    let person_head = lance::Dataset::open(&person_uri)
+        .await
+        .unwrap()
+        .version()
+        .version;
+    assert!(
+        person_head > pre_person_pin,
+        "primary inline delete must have advanced node:Person before rejecting"
+    );
+    let db = Omnigraph::open(&uri).await.unwrap();
+    assert_eq!(
+        helpers::count_rows(&db, "node:Person").await,
+        4,
+        "manifest-conflicted delete must not remove net Person rows after recovery"
+    );
+    assert_eq!(
+        helpers::count_rows(&db, "edge:Knows").await,
+        3,
+        "manifest-conflicted delete must not remove net Knows rows after recovery"
     );
 }
 

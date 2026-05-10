@@ -549,36 +549,13 @@ impl StagedMutation {
             entry.expected_version = current;
             expected_versions.insert(entry.table_key.clone(), current);
         }
-        for (table_key, _update) in inline_committed.iter() {
-            let current = snapshot
-                .entry(table_key)
-                .map(|e| e.table_version)
-                .ok_or_else(|| {
-                    OmniError::manifest_conflict(format!(
-                    "table '{}' missing from manifest at commit time",
-                    table_key,
-                    ))
-                })?;
-            let expected = expected_versions.get(table_key).copied().ok_or_else(|| {
-                OmniError::manifest_internal(format!(
-                    "StagedMutation::commit_all: missing expected version for inline-committed table '{}'",
-                    table_key
-                ))
-            })?;
-            if expected != current {
-                return Err(OmniError::manifest_expected_version_mismatch(
-                    table_key.clone(),
-                    expected,
-                    current,
-                ));
-            }
-            expected_versions.insert(table_key.clone(), current);
-        }
-
         // Sidecar protocol: build the per-table pin list and write the
-        // sidecar BEFORE any Lance commit_staged runs, so a crash
-        // between Phase B (this loop) and Phase C (the caller's manifest
-        // publish) is recoverable on next open.
+        // sidecar BEFORE any later error can return after Lance HEAD has
+        // already moved. For staged tables this still happens before any
+        // Lance commit_staged runs. For inline-committed delete tables,
+        // Lance HEAD moved inside delete_where before commit_all, so the
+        // sidecar must also exist before the inline manifest-version check
+        // below can reject a stale query.
         //
         // Pins cover BOTH staged tables (Lance HEAD will advance below
         // when `commit_staged` runs) AND inline-committed tables
@@ -627,8 +604,6 @@ impl StagedMutation {
             });
         }
 
-        let mut updates: Vec<SubTableUpdate> = inline_committed.into_values().collect();
-
         let sidecar_handle = if pins.is_empty() {
             None
         } else {
@@ -640,6 +615,34 @@ impl StagedMutation {
             );
             Some(write_sidecar(db.root_uri(), db.storage_adapter(), &sidecar).await?)
         };
+
+        for (table_key, _update) in inline_committed.iter() {
+            let current = snapshot
+                .entry(table_key)
+                .map(|e| e.table_version)
+                .ok_or_else(|| {
+                    OmniError::manifest_conflict(format!(
+                        "table '{}' missing from manifest at commit time",
+                        table_key,
+                    ))
+                })?;
+            let expected = expected_versions.get(table_key).copied().ok_or_else(|| {
+                OmniError::manifest_internal(format!(
+                    "StagedMutation::commit_all: missing expected version for inline-committed table '{}'",
+                    table_key
+                ))
+            })?;
+            if expected != current {
+                return Err(OmniError::manifest_expected_version_mismatch(
+                    table_key.clone(),
+                    expected,
+                    current,
+                ));
+            }
+            expected_versions.insert(table_key.clone(), current);
+        }
+
+        let mut updates: Vec<SubTableUpdate> = inline_committed.into_values().collect();
 
         for entry in staged {
             let StagedTableEntry {
