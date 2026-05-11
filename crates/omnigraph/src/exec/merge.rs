@@ -1144,17 +1144,15 @@ impl Omnigraph {
         // that with a less informative error; the next op or the next
         // `Omnigraph::open` will re-sync the coord anyway.
         if previous_branch == target_branch {
-            match merge_result {
-                Ok(_) => self.refresh_coordinator_only().await?,
-                Err(_) => {
-                    if let Err(err) = self.refresh_coordinator_only().await {
-                        tracing::warn!(
-                            error = %err,
-                            "post-merge coordinator refresh failed on the error path; \
-                             the next op or open will re-sync"
-                        );
-                    }
+            if let Err(refresh_err) = self.refresh_coordinator_only().await {
+                if merge_result.is_ok() {
+                    return Err(refresh_err);
                 }
+                tracing::warn!(
+                    error = %refresh_err,
+                    "post-merge coordinator refresh failed on the error path; \
+                     the next op or open will re-sync"
+                );
             }
         }
 
