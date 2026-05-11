@@ -389,6 +389,55 @@ async fn branch_merge_with_blob_columns_preserves_blob_data() {
 }
 
 #[tokio::test]
+async fn branch_merge_with_external_blob_uri_materializes_payload() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = dir.path().to_str().unwrap();
+    let external_dir = tempfile::tempdir().unwrap();
+    let external_path = external_dir.path().join("external.txt");
+    fs::write(&external_path, b"External").unwrap();
+    let external_uri = format!("file://{}", external_path.display());
+
+    let mut main = Omnigraph::init(uri, BLOB_SCHEMA).await.unwrap();
+    load_jsonl(&mut main, "", LoadMode::Overwrite)
+        .await
+        .unwrap();
+    main.branch_create("feature").await.unwrap();
+
+    let mut feature = Omnigraph::open(uri).await.unwrap();
+    load_jsonl(
+        &mut main,
+        "{\"type\":\"Document\",\"data\":{\"title\":\"main-doc\",\"content\":\"base64:TWFpbg==\",\"note\":\"main\"}}",
+        LoadMode::Append,
+    )
+    .await
+    .unwrap();
+
+    let external_data = serde_json::json!({
+        "type": "Document",
+        "data": {
+            "title": "external",
+            "content": external_uri,
+            "note": "branch insert",
+        }
+    })
+    .to_string();
+    feature
+        .load("feature", &external_data, LoadMode::Append)
+        .await
+        .unwrap();
+
+    let outcome = main.branch_merge("feature", "main").await.unwrap();
+    assert_eq!(outcome, MergeOutcome::Merged);
+
+    let external = main
+        .read_blob("Document", "external", "content")
+        .await
+        .unwrap();
+    let external_bytes = external.read().await.unwrap();
+    assert_eq!(&external_bytes[..], b"External");
+}
+
+#[tokio::test]
 async fn branch_merge_applies_node_insert_to_main() {
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().to_str().unwrap();

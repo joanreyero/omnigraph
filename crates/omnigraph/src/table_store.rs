@@ -379,19 +379,13 @@ impl TableStore {
                     column_name
                 ))
             })?;
-            if let Some(uri) = blob.uri() {
-                builder
-                    .push_uri(uri)
-                    .map_err(|e| OmniError::Lance(e.to_string()))?;
-            } else {
-                builder
-                    .push_bytes(
-                        blob.read()
-                            .await
-                            .map_err(|e| OmniError::Lance(e.to_string()))?,
-                    )
-                    .map_err(|e| OmniError::Lance(e.to_string()))?;
-            }
+            builder
+                .push_bytes(
+                    blob.read()
+                        .await
+                        .map_err(|e| OmniError::Lance(e.to_string()))?,
+                )
+                .map_err(|e| OmniError::Lance(e.to_string()))?;
         }
 
         if files.next().is_some() {
