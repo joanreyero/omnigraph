@@ -3208,6 +3208,89 @@ async fn concurrent_branch_ops_morphological_matrix() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_merge_clean_409_does_not_poison_next_change_on_target() {
+    // MR-923 regression. Pins the path that the
+    // `[d:merge×change:into-target]` cell of
+    // `concurrent_branch_ops_morphological_matrix` exercises only when
+    // timing happens to hit it: the merge body's `post_queue_snapshot`
+    // drift check returns a clean 409 because a concurrent /change on
+    // the merge target landed first.
+    //
+    // Pre-fix: `branch_merge_impl` only refreshed the restored
+    // coordinator when `merge_result.is_ok()`. The clean-409 path
+    // skipped refresh, leaving the restored coord's cached manifest
+    // snapshot stale relative to disk (the concurrent /change had
+    // published against the *swapped* coord during the merge body).
+    // The next sequential `/change` on the target seeded its publisher
+    // `expected_versions` from the stale cache and 409'd with
+    // `ExpectedVersionMismatch` — a non-retryable conflict surfaced to
+    // a caller who had no concurrent writer of their own.
+    //
+    // The matrix cell catches this incidentally (it asserts the
+    // sentinel on every cell-d run regardless of merge outcome), but
+    // its single-iteration shape means the flake reproduces only when
+    // the clean-409 path happens to fire. This test loops the cell-d
+    // scenario until the clean-409 branch fires, then sharpens the
+    // post-condition specifically for that branch: with the fix, the
+    // sentinel must succeed.
+    const MAX_ITERATIONS: usize = 20;
+    let mut hit_clean_409 = false;
+    for iter in 0..MAX_ITERATIONS {
+        let h = matrix::Harness::new().await;
+        let feature = format!("feature-mr923-{}", iter);
+        let frank = format!("Frank-mr923-{}", iter);
+        let eve = format!("Eve-mr923-{}", iter);
+        h.create_branch("main", &feature).await;
+        h.insert_person(&feature, &eve, 22).await;
+
+        let (sa, sb) = h
+            .run_pair(
+                matrix::op_merge(feature.clone(), "main".to_string()),
+                matrix::op_change_insert("main".to_string(), frank.clone(), 33),
+            )
+            .await;
+        assert_eq!(
+            sb.status,
+            StatusCode::OK,
+            "iter {}: concurrent /change must always succeed",
+            iter,
+        );
+        assert!(
+            sa.status == StatusCode::OK || sa.status == StatusCode::CONFLICT,
+            "iter {}: merge must be 200 or clean 409, got {}",
+            iter,
+            sa.status,
+        );
+
+        // The sentinel must succeed regardless of which branch the
+        // racing pair took. The matrix cell asserts this too; we
+        // re-assert here per iteration so a regression that breaks
+        // only the 409 branch is surfaced directly.
+        let sentinel = format!("sentinel-mr923-{}", iter);
+        h.assert_post_op_sentinel("mr923-regression", &sentinel).await;
+
+        if sa.status == StatusCode::CONFLICT {
+            // Confirmed the conflict carries the structured
+            // `manifest_conflict` payload Cell d documents, so we know
+            // this was the clean-409 path (not a malformed error).
+            let error: ErrorOutput = serde_json::from_slice(&sa.body).unwrap();
+            error
+                .manifest_conflict
+                .expect("clean 409 must include manifest_conflict payload");
+            hit_clean_409 = true;
+            break;
+        }
+    }
+    // If MAX_ITERATIONS runs never hit the clean-409 path, the timing
+    // window simply didn't open on this hardware. The per-iteration
+    // sentinel assertion above still covered every 200-merge run, and
+    // the matrix cell covers the same scenario from a different angle.
+    // Don't fail the test — that would substitute hardware-timing
+    // sensitivity for the regression signal.
+    let _ = hit_clean_409;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn change_disjoint_table_concurrency_succeeds_at_http_level() {
     // HTTP-level pin for MR-686's disjoint-table promise: concurrent /change
     // requests touching different node types must coexist without admission
