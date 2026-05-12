@@ -15,7 +15,8 @@ Join the [Omnigraph Slack community](https://join.slack.com/t/omnigraphworkspace
 
 ## Use Cases
 
-- On-prem & hybrid context graphs
+- Unified company brain
+- Context graphs
 - Backbone for multi-agent research
 - Incident response graphs
 - Compliance & audit graphs
