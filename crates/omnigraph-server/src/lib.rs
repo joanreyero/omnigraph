@@ -15,7 +15,8 @@ use api::{
     BranchCreateOutput, BranchCreateRequest, BranchDeleteOutput, BranchListOutput,
     BranchMergeOutput, BranchMergeRequest, ChangeOutput, ChangeRequest, CommitListOutput,
     CommitListQuery, ErrorCode, ErrorOutput, ExportRequest, HealthOutput, IngestOutput,
-    IngestRequest, ReadOutput, ReadRequest, SchemaApplyOutput, SchemaApplyRequest, SchemaOutput,
+    IngestRequest, ReadOutput, ReadRequest, SaveQueryRequest, SavedQueryDeleteOutput,
+    SavedQueryListOutput, SavedQueryOutput, SchemaApplyOutput, SchemaApplyRequest, SchemaOutput,
     SnapshotQuery, ingest_output, schema_apply_output, snapshot_payload,
 };
 use axum::body::{Body, Bytes};
@@ -85,6 +86,10 @@ fn hash_bearer_token(token: &str) -> BearerTokenHash {
         server_branch_merge,
         server_commit_list,
         server_commit_show,
+        server_query_list,
+        server_query_get,
+        server_query_save,
+        server_query_delete,
     ),
     modifiers(&SecurityAddon),
 )]
@@ -545,6 +550,13 @@ pub fn build_app(state: AppState) -> Router {
         .route("/branches/merge", post(server_branch_merge))
         .route("/commits", get(server_commit_list))
         .route("/commits/{commit_id}", get(server_commit_show))
+        .route("/queries", get(server_query_list))
+        .route(
+            "/queries/{name}",
+            get(server_query_get)
+                .put(server_query_save)
+                .delete(server_query_delete),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -1479,6 +1491,173 @@ async fn server_commit_show(
             .map_err(ApiError::from_omni)?
     };
     Ok(Json(api::commit_output(&commit)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/queries",
+    tag = "queries",
+    operation_id = "listQueries",
+    responses(
+        (status = 200, description = "All saved queries, ordered by name", body = SavedQueryListOutput),
+        (status = 401, description = "Unauthorized", body = ErrorOutput),
+        (status = 403, description = "Forbidden", body = ErrorOutput),
+    ),
+    security(("bearer_token" = [])),
+)]
+/// List every saved query.
+///
+/// Each entry includes the full `.gq` source plus the declared parameter
+/// signature, so a client can render or invoke them without a follow-up
+/// fetch.
+async fn server_query_list(
+    State(state): State<AppState>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> std::result::Result<Json<SavedQueryListOutput>, ApiError> {
+    authorize_request(
+        &state,
+        actor.as_ref().map(|Extension(actor)| actor),
+        PolicyRequest {
+            actor_id: actor
+                .as_ref()
+                .map(|Extension(actor)| actor.as_str().to_string())
+                .unwrap_or_default(),
+            action: PolicyAction::QueryRead,
+            branch: None,
+            target_branch: None,
+        },
+    )?;
+    let queries = state.engine.queries_list().await.map_err(ApiError::from_omni)?;
+    Ok(Json(SavedQueryListOutput {
+        queries: queries.iter().map(SavedQueryOutput::from).collect(),
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/queries/{name}",
+    tag = "queries",
+    operation_id = "getQuery",
+    params(("name" = String, Path, description = "Saved query name")),
+    responses(
+        (status = 200, description = "The saved query", body = SavedQueryOutput),
+        (status = 401, description = "Unauthorized", body = ErrorOutput),
+        (status = 403, description = "Forbidden", body = ErrorOutput),
+        (status = 404, description = "Not found", body = ErrorOutput),
+    ),
+    security(("bearer_token" = [])),
+)]
+/// Retrieve a saved query by name.
+async fn server_query_get(
+    State(state): State<AppState>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Path(name): Path<String>,
+) -> std::result::Result<Json<SavedQueryOutput>, ApiError> {
+    authorize_request(
+        &state,
+        actor.as_ref().map(|Extension(actor)| actor),
+        PolicyRequest {
+            actor_id: actor
+                .as_ref()
+                .map(|Extension(actor)| actor.as_str().to_string())
+                .unwrap_or_default(),
+            action: PolicyAction::QueryRead,
+            branch: None,
+            target_branch: None,
+        },
+    )?;
+    let saved = state.engine.queries_get(&name).await.map_err(ApiError::from_omni)?;
+    Ok(Json(SavedQueryOutput::from(&saved)))
+}
+
+#[utoipa::path(
+    put,
+    path = "/queries/{name}",
+    tag = "queries",
+    operation_id = "saveQuery",
+    params(("name" = String, Path, description = "Saved query name (must match the source's declared query name)")),
+    request_body = SaveQueryRequest,
+    responses(
+        (status = 200, description = "The saved query (insert or overwrite)", body = SavedQueryOutput),
+        (status = 400, description = "Bad request — invalid name, source did not parse, or declared name does not match", body = ErrorOutput),
+        (status = 401, description = "Unauthorized", body = ErrorOutput),
+        (status = 403, description = "Forbidden", body = ErrorOutput),
+    ),
+    security(("bearer_token" = [])),
+)]
+/// Save (insert or overwrite) a named query.
+///
+/// `source` must declare exactly one `query <name>(...)` block whose name
+/// matches the URL `{name}`. The server parses the source at save time and
+/// persists the declared parameter signature alongside it. The 1:1 mapping
+/// between URL name and `.gq` query name keeps the saved-query →
+/// MCP-tool mapping unambiguous.
+async fn server_query_save(
+    State(state): State<AppState>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Path(name): Path<String>,
+    Json(request): Json<SaveQueryRequest>,
+) -> std::result::Result<Json<SavedQueryOutput>, ApiError> {
+    authorize_request(
+        &state,
+        actor.as_ref().map(|Extension(actor)| actor),
+        PolicyRequest {
+            actor_id: actor
+                .as_ref()
+                .map(|Extension(actor)| actor.as_str().to_string())
+                .unwrap_or_default(),
+            action: PolicyAction::QueryWrite,
+            branch: None,
+            target_branch: None,
+        },
+    )?;
+    let saved = state
+        .engine
+        .queries_save(&name, &request.source, request.description)
+        .await
+        .map_err(ApiError::from_omni)?;
+    Ok(Json(SavedQueryOutput::from(&saved)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/queries/{name}",
+    tag = "queries",
+    operation_id = "deleteQuery",
+    params(("name" = String, Path, description = "Saved query name")),
+    responses(
+        (status = 200, description = "Delete result. `deleted` is false if the query did not exist (idempotent).", body = SavedQueryDeleteOutput),
+        (status = 401, description = "Unauthorized", body = ErrorOutput),
+        (status = 403, description = "Forbidden", body = ErrorOutput),
+    ),
+    security(("bearer_token" = [])),
+)]
+/// Delete a saved query. Idempotent — returns `deleted: false` if the
+/// query did not exist.
+async fn server_query_delete(
+    State(state): State<AppState>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Path(name): Path<String>,
+) -> std::result::Result<Json<SavedQueryDeleteOutput>, ApiError> {
+    authorize_request(
+        &state,
+        actor.as_ref().map(|Extension(actor)| actor),
+        PolicyRequest {
+            actor_id: actor
+                .as_ref()
+                .map(|Extension(actor)| actor.as_str().to_string())
+                .unwrap_or_default(),
+            action: PolicyAction::QueryWrite,
+            branch: None,
+            target_branch: None,
+        },
+    )?;
+    let deleted = state
+        .engine
+        .queries_delete(&name)
+        .await
+        .map_err(ApiError::from_omni)?;
+    Ok(Json(SavedQueryDeleteOutput { name, deleted }))
 }
 
 fn read_target_from_request(branch: Option<String>, snapshot: Option<String>) -> ReadTarget {

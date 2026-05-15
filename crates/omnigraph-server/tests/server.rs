@@ -11,7 +11,7 @@ use omnigraph::db::{Omnigraph, ReadTarget};
 use omnigraph::loader::{LoadMode, load_jsonl};
 use omnigraph_server::api::{
     BranchCreateRequest, BranchMergeRequest, ChangeRequest, ErrorOutput, ExportRequest,
-    IngestRequest, ReadRequest, SchemaApplyRequest, SchemaOutput,
+    IngestRequest, ReadRequest, SaveQueryRequest, SchemaApplyRequest, SchemaOutput,
 };
 use omnigraph_server::{AppState, build_app};
 use serde_json::{Value, json};
@@ -563,6 +563,143 @@ async fn schema_apply_route_rejects_when_non_main_branch_exists() {
         payload["code"],
         serde_json::to_value(omnigraph_server::api::ErrorCode::Conflict).unwrap()
     );
+}
+
+#[tokio::test]
+async fn queries_route_round_trip_save_list_get_delete() {
+    let (_temp, app) = app_for_loaded_repo().await;
+
+    // Empty list initially.
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/queries")
+        .body(Body::empty())
+        .unwrap();
+    let (status, payload) = json_response(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["queries"], json!([]));
+
+    // Save a query.
+    let source =
+        "query find_person($name: String) { match { $p: Person { name: $name } } return { $p.name } }";
+    let request = Request::builder()
+        .method(Method::PUT)
+        .uri("/queries/find_person")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&SaveQueryRequest {
+                source: source.to_string(),
+                description: Some("by name".to_string()),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (status, payload) = json_response(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["name"], "find_person");
+    assert_eq!(payload["description"], "by name");
+    assert_eq!(payload["params"][0]["name"], "name");
+    assert_eq!(payload["params"][0]["type_name"], "String");
+    assert_eq!(payload["params"][0]["nullable"], false);
+
+    // List shows it.
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/queries")
+        .body(Body::empty())
+        .unwrap();
+    let (status, payload) = json_response(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["queries"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["queries"][0]["name"], "find_person");
+
+    // Get returns the full record.
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/queries/find_person")
+        .body(Body::empty())
+        .unwrap();
+    let (status, payload) = json_response(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["source"], source);
+
+    // Delete removes it.
+    let request = Request::builder()
+        .method(Method::DELETE)
+        .uri("/queries/find_person")
+        .body(Body::empty())
+        .unwrap();
+    let (status, payload) = json_response(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["deleted"], true);
+
+    // Idempotent delete: gone now.
+    let request = Request::builder()
+        .method(Method::DELETE)
+        .uri("/queries/find_person")
+        .body(Body::empty())
+        .unwrap();
+    let (status, payload) = json_response(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["deleted"], false);
+
+    // And get is 404.
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/queries/find_person")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _payload) = json_response(&app, request).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn queries_route_rejects_source_name_mismatch() {
+    let (_temp, app) = app_for_loaded_repo().await;
+
+    // Source declares `query foo(...)` but URL name is `bar`.
+    let source =
+        "query foo($x: String) { match { $p: Person { name: $x } } return { $p.name } }";
+    let request = Request::builder()
+        .method(Method::PUT)
+        .uri("/queries/bar")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&SaveQueryRequest {
+                source: source.to_string(),
+                description: None,
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (status, payload) = json_response(&app, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let err: ErrorOutput = serde_json::from_value(payload).unwrap();
+    assert!(err.error.contains("must match"), "got: {}", err.error);
+}
+
+#[tokio::test]
+async fn queries_route_rejects_reserved_name() {
+    let (_temp, app) = app_for_loaded_repo().await;
+
+    // `read` is a reserved built-in tool name.
+    let source = "query read() { match { $p: Person } return { $p.name } }";
+    let request = Request::builder()
+        .method(Method::PUT)
+        .uri("/queries/read")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&SaveQueryRequest {
+                source: source.to_string(),
+                description: None,
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (status, payload) = json_response(&app, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let err: ErrorOutput = serde_json::from_value(payload).unwrap();
+    assert!(err.error.contains("reserved"), "got: {}", err.error);
 }
 
 struct EnvGuard {
