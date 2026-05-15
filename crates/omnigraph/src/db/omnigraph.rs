@@ -315,6 +315,38 @@ impl Omnigraph {
         schema_apply::apply_schema(self, desired_schema_source).await
     }
 
+    /// List every saved query under `<root>/queries/`, ordered by name.
+    pub async fn queries_list(&self) -> Result<Vec<crate::db::SavedQuery>> {
+        crate::db::saved_queries::list(self.uri(), Arc::clone(&self.storage)).await
+    }
+
+    /// Retrieve a single saved query by name. Returns
+    /// `OmniError::Manifest(NotFound)` if it does not exist.
+    pub async fn queries_get(&self, name: &str) -> Result<crate::db::SavedQuery> {
+        crate::db::saved_queries::get(self.uri(), self.storage.as_ref(), name).await
+    }
+
+    /// Save (insert or overwrite) a named query. `source` must declare
+    /// exactly one `query <name>(...)` block whose name matches `name`.
+    /// The source is parsed at save time so the declared parameter list
+    /// can be persisted alongside the source — this is what the MCP layer
+    /// uses to build a typed input schema per saved query.
+    pub async fn queries_save(
+        &self,
+        name: &str,
+        source: &str,
+        description: Option<String>,
+    ) -> Result<crate::db::SavedQuery> {
+        crate::db::saved_queries::save(self.uri(), self.storage.as_ref(), name, source, description)
+            .await
+    }
+
+    /// Delete a saved query. Idempotent — returns `Ok(false)` if it did
+    /// not exist.
+    pub async fn queries_delete(&self, name: &str) -> Result<bool> {
+        crate::db::saved_queries::delete(self.uri(), self.storage.as_ref(), name).await
+    }
+
     pub(crate) async fn ensure_schema_apply_idle(&self, operation: &str) -> Result<()> {
         schema_apply::ensure_schema_apply_idle(self, operation).await
     }

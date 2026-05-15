@@ -23,6 +23,8 @@ pub enum PolicyAction {
     BranchCreate,
     BranchDelete,
     BranchMerge,
+    QueryRead,
+    QueryWrite,
     Admin,
 }
 
@@ -36,6 +38,8 @@ impl PolicyAction {
             Self::BranchCreate => "branch_create",
             Self::BranchDelete => "branch_delete",
             Self::BranchMerge => "branch_merge",
+            Self::QueryRead => "query_read",
+            Self::QueryWrite => "query_write",
             Self::Admin => "admin",
         }
     }
@@ -70,6 +74,8 @@ impl FromStr for PolicyAction {
             "branch_create" => Ok(Self::BranchCreate),
             "branch_delete" => Ok(Self::BranchDelete),
             "branch_merge" => Ok(Self::BranchMerge),
+            "query_read" => Ok(Self::QueryRead),
+            "query_write" => Ok(Self::QueryWrite),
             "admin" => Ok(Self::Admin),
             other => bail!("unknown policy action '{other}'"),
         }
@@ -588,6 +594,8 @@ namespace Omnigraph {
     action "branch_create" appliesTo { principal: Actor, resource: Repo, context: RequestContext };
     action "branch_delete" appliesTo { principal: Actor, resource: Repo, context: RequestContext };
     action "branch_merge" appliesTo { principal: Actor, resource: Repo, context: RequestContext };
+    action "query_read" appliesTo { principal: Actor, resource: Repo, context: RequestContext };
+    action "query_write" appliesTo { principal: Actor, resource: Repo, context: RequestContext };
     action "admin" appliesTo { principal: Actor, resource: Repo, context: RequestContext };
 }
 "#

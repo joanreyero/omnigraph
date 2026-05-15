@@ -4,6 +4,7 @@ pub mod manifest;
 mod omnigraph;
 mod recovery_audit;
 mod run_registry;
+mod saved_queries;
 mod schema_state;
 pub(crate) mod write_queue;
 
@@ -14,6 +15,7 @@ pub use omnigraph::{
     CleanupPolicyOptions, MergeOutcome, Omnigraph, OpenMode, SchemaApplyResult,
     TableCleanupStats, TableOptimizeStats,
 };
+pub use saved_queries::{SavedQuery, SavedQueryParam};
 pub(crate) use omnigraph::ensure_public_branch_ref;
 pub(crate) use run_registry::is_internal_run_branch;
 

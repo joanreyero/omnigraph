@@ -169,6 +169,8 @@ const EXPECTED_PATHS: &[&str] = &[
     "/branches/merge",
     "/commits",
     "/commits/{commit_id}",
+    "/queries",
+    "/queries/{name}",
 ];
 
 #[test]
@@ -592,6 +594,10 @@ fn protected_endpoints_reference_bearer_token_security() {
         ("/branches/merge", "post"),
         ("/commits", "get"),
         ("/commits/{commit_id}", "get"),
+        ("/queries", "get"),
+        ("/queries/{name}", "get"),
+        ("/queries/{name}", "put"),
+        ("/queries/{name}", "delete"),
     ];
 
     for (path, method) in protected_paths {

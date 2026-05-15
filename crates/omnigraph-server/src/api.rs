@@ -1,4 +1,7 @@
-use omnigraph::db::{GraphCommit, MergeOutcome, ReadTarget, SchemaApplyResult, Snapshot};
+use omnigraph::db::{
+    GraphCommit, MergeOutcome, ReadTarget, SavedQuery, SavedQueryParam, SchemaApplyResult,
+    Snapshot,
+};
 use omnigraph::error::{MergeConflict, MergeConflictKind};
 use omnigraph::loader::{IngestResult, LoadMode};
 use omnigraph_compiler::SchemaMigrationStep;
@@ -284,6 +287,74 @@ pub struct SchemaApplyOutput {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SchemaOutput {
     pub schema_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SavedQueryParamOutput {
+    pub name: String,
+    pub type_name: String,
+    pub nullable: bool,
+}
+
+impl From<&SavedQueryParam> for SavedQueryParamOutput {
+    fn from(value: &SavedQueryParam) -> Self {
+        Self {
+            name: value.name.clone(),
+            type_name: value.type_name.clone(),
+            nullable: value.nullable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SavedQueryOutput {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub source: String,
+    pub params: Vec<SavedQueryParamOutput>,
+    /// Last write time as Unix epoch microseconds, encoded as a decimal string.
+    pub updated_at_us: String,
+}
+
+impl From<&SavedQuery> for SavedQueryOutput {
+    fn from(value: &SavedQuery) -> Self {
+        Self {
+            name: value.name.clone(),
+            description: value.description.clone(),
+            source: value.source.clone(),
+            params: value.params.iter().map(SavedQueryParamOutput::from).collect(),
+            updated_at_us: value.updated_at_us.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SavedQueryListOutput {
+    pub queries: Vec<SavedQueryOutput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SaveQueryRequest {
+    /// Full `.gq` source. Must declare exactly one `query <name>(...)` block
+    /// whose declared name matches the URL `{name}`. The server parses the
+    /// source at save time and persists the extracted parameter signature
+    /// alongside it; clients (MCP, future UIs) use that signature to build
+    /// typed inputs.
+    #[schema(example = "query find_person($name: String) {\n    match {\n        $p: Person { name: $name }\n    }\n    return { $p.name, $p.age }\n}")]
+    pub source: String,
+    /// Optional human-readable description. Not used during execution; surfaced
+    /// to clients so a saved query can carry its own help text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SavedQueryDeleteOutput {
+    pub name: String,
+    /// `true` if the saved query existed and was removed, `false` if it did
+    /// not exist (delete is idempotent).
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
